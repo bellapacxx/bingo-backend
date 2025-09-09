@@ -6,9 +6,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/bingo-backend/config"
-	"github.com/bingo-backend/routes"
-	"github.com/bingo-backend/services"
+	"github.com/bellapacxx/bingo-backend/config"
+	"github.com/bellapacxx/bingo-backend/routes"
+	"github.com/bellapacxx/bingo-backend/services"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"

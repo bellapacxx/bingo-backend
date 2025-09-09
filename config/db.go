@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	"bingo-backend/models"
+	"github.com/bellapacxx/bingo-backend/models"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
