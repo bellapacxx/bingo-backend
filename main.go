@@ -66,7 +66,7 @@ func main() {
 	// Start server
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = config.PORT // default from config
+		port = "4000" // default from config
 	}
 
 	log.Printf("🚀 Bingo Backend server starting on port %s", port)

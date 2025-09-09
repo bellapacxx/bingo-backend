@@ -11,24 +11,34 @@ func SetupRoutes(r *gin.Engine) {
 	// ----------------------
 	// User routes
 	// ----------------------
-	api.POST("/users", controllers.RegisterUser)        // Register user
-	api.GET("/users/:telegram_id", controllers.GetUser) // Get user by Telegram ID
+	api.POST("/users", controllers.RegisterUser)                  // Register user
+	api.GET("/users/:telegram_id", controllers.GetUser)           // Get user by Telegram ID
+	api.PUT("/users/:telegram_id/phone", controllers.UpdatePhone) // Update phone number
 
 	// ----------------------
 	// Game routes
 	// ----------------------
 	api.GET("/games", controllers.ListGames)             // List all games
+	api.GET("/games/:id", controllers.GetGame)           // Get single game info
 	api.POST("/games/:id/join", controllers.JoinGame)    // Join a game
 	api.GET("/games/:id/lobby", controllers.LobbyStatus) // Get lobby status
 
 	// ----------------------
-	// Card routes
+	// Card/Ticket routes
 	// ----------------------
-	api.POST("/cards", controllers.BuyCard) // Buy bingo card
+	api.POST("/tickets", controllers.BuyTicket)                         // Buy bingo card/ticket
+	api.GET("/tickets/user/:telegram_id", controllers.GetTicketsByUser) // Get user's tickets
 
 	// ----------------------
 	// Transaction routes
 	// ----------------------
 	api.POST("/deposit", controllers.Deposit)   // Deposit funds
 	api.POST("/withdraw", controllers.Withdraw) // Withdraw funds
+
+	// ----------------------
+	// Health check
+	// ----------------------
+	api.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok"})
+	})
 }
