@@ -138,12 +138,24 @@ func (l *Lobby) startRound() {
 	l.Status = "in_progress"
 	l.NumbersDrawn = []string{}
 
+	// Determine next round number
+	var lastGame models.Game
+	result := config.DB.
+		Where("stake = ?", l.Stake).
+		Order("round_number DESC").
+		First(&lastGame)
+	nextRound := 1
+	if result.Error == nil {
+		nextRound = lastGame.RoundNumber + 1
+	}
+
 	// Create game in DB
 	game := models.Game{
 		Stake:        l.Stake,
 		Status:       "in_progress",
 		StartTime:    time.Now(),
 		NumbersDrawn: []string{},
+		RoundNumber:  nextRound,
 	}
 	config.DB.Create(&game)
 	l.currentGame = &game
