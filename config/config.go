@@ -24,7 +24,9 @@ func SetupDatabase() *gorm.DB {
 	}
 
 	// Connect to DB
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+		PrepareStmt: false,
+	})
 	if err != nil {
 		log.Fatalf("[FATAL] Failed to connect to DB: %v", err)
 	}
