@@ -19,14 +19,22 @@ func RegisterUser(c *gin.Context) {
 		return
 	}
 
-	// check if already exists
+	// Ensure telegram_id is valid
+	if user.TelegramID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "telegram_id is required"})
+		return
+	}
+
+	// Check if already exists
 	var existing models.User
 	if err := config.DB.Where("telegram_id = ?", user.TelegramID).First(&existing).Error; err == nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "User already exists"})
 		return
 	}
 
+	// Create new user
 	if err := config.DB.Create(&user).Error; err != nil {
+		log.Printf("[ERROR] Failed to create user: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
 		return
 	}
@@ -37,8 +45,6 @@ func RegisterUser(c *gin.Context) {
 // GetUser fetches a user by telegram_id
 func GetUser(c *gin.Context) {
 	tidStr := c.Param("telegram_id")
-
-	// Accept either string or number in URL
 	tid, err := strconv.ParseInt(tidStr, 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid telegram_id, must be a number"})
@@ -46,13 +52,11 @@ func GetUser(c *gin.Context) {
 	}
 
 	var user models.User
-	err = config.DB.Where("telegram_id = ?", tid).First(&user).Error
-	if err != nil {
+	if err := config.DB.Where("telegram_id = ?", tid).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 			return
 		}
-		// Log the actual DB error
 		log.Printf("[ERROR] Failed to fetch user: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
@@ -78,19 +82,21 @@ func UpdatePhone(c *gin.Context) {
 		return
 	}
 
-	// check if user exists
+	// Find user
 	var user models.User
 	if err := config.DB.Where("telegram_id = ?", tid).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 			return
 		}
+		log.Printf("[ERROR] Failed to fetch user for phone update: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
 
-	// update phone
+	// Update phone
 	if err := config.DB.Model(&user).Update("phone", req.Phone).Error; err != nil {
+		log.Printf("[ERROR] Failed to update phone for telegram_id %d: %v", tid, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update phone"})
 		return
 	}
