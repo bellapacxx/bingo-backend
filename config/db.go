@@ -17,7 +17,9 @@ func ConnectDB() {
 		log.Fatal("[FATAL] DATABASE_URL is required in .env")
 	}
 
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+		PrepareStmt: false,
+	})
 	if err != nil {
 		log.Fatalf("[FATAL] Failed to connect to database: %v", err)
 	}
