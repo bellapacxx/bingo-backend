@@ -27,8 +27,15 @@ func RegisterUser(c *gin.Context) {
 
 	// Check if already exists
 	var existing models.User
-	if err := config.DB.Where("telegram_id = ?", user.TelegramID).First(&existing).Error; err == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "User already exists"})
+	err := config.DB.Where("telegram_id = ?", user.TelegramID).First(&existing).Error
+	if err == nil {
+		// User exists, return existing data
+		c.JSON(http.StatusOK, existing)
+		return
+	} else if err != gorm.ErrRecordNotFound {
+		// Some other DB error
+		log.Printf("[ERROR] Failed to check existing user: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
 
