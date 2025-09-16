@@ -55,7 +55,7 @@ func main() {
 	initEnv()
 
 	// Connect to database
-	config.ConnectDB()
+	config.SetupDatabase()
 
 	// Initialize in-memory lobby service
 	services.InitLobbyService()

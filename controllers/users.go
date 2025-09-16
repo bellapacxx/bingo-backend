@@ -12,6 +12,7 @@ import (
 )
 
 // RegisterUser registers a new user (from Telegram)
+// RegisterUser registers a Telegram user or returns existing
 func RegisterUser(c *gin.Context) {
 	var user models.User
 	if err := c.ShouldBindJSON(&user); err != nil {
@@ -19,13 +20,11 @@ func RegisterUser(c *gin.Context) {
 		return
 	}
 
-	// Ensure telegram_id is valid
 	if user.TelegramID == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "telegram_id is required"})
 		return
 	}
 
-	// Check if already exists
 	var existing models.User
 	err := config.DB.Where("telegram_id = ?", user.TelegramID).First(&existing).Error
 	if err == nil {
@@ -33,7 +32,6 @@ func RegisterUser(c *gin.Context) {
 		c.JSON(http.StatusOK, existing)
 		return
 	} else if err != gorm.ErrRecordNotFound {
-		// Some other DB error
 		log.Printf("[ERROR] Failed to check existing user: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
