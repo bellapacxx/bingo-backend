@@ -42,10 +42,7 @@ func setupRouter() *gin.Engine {
 	})
 
 	// WebSocket lobby endpoint
-	r.GET("/ws/:game_id", func(c *gin.Context) {
-		gameID := c.Param("game_id")
-		services.HandleWebSocket(c.Writer, c.Request, gameID)
-	})
+	r.GET("/ws/:stake", services.HandleWebSocket)
 
 	return r
 }

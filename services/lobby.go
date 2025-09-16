@@ -1,151 +1,239 @@
 package services
 
 import (
-	"log"
 	"math/rand"
-	"net/http"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/bellapacxx/bingo-backend/config"
+	"github.com/bellapacxx/bingo-backend/models"
 	"github.com/gorilla/websocket"
 )
 
 type Lobby struct {
-	GameID       uint
-	Players      map[int64]*websocket.Conn // TelegramID -> connection
-	Status       string                    // waiting, countdown, playing
-	Mutex        sync.Mutex
-	Countdown    int // seconds
-	DrawnNumbers []int
+	Stake        int
+	Clients      map[uint]*websocket.Conn
+	Cards        map[uint][]int
+	Status       string // "waiting" | "countdown" | "in_progress"
+	Countdown    int
+	NumbersDrawn []string
+	mu           sync.Mutex
+	currentGame  *models.Game
 }
 
-var Lobbies map[uint]*Lobby
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
+// Predefined stakes
+var Stakes = []int{10, 20, 50, 100}
+var Lobbies = map[int]*Lobby{}
 
 func InitLobbyService() {
-	Lobbies = make(map[uint]*Lobby)
-	log.Println("[INFO] Lobby service initialized")
+	for _, stake := range Stakes {
+		lobby := &Lobby{
+			Stake:   stake,
+			Clients: make(map[uint]*websocket.Conn),
+			Cards:   make(map[uint][]int),
+			Status:  "waiting",
+		}
+		Lobbies[stake] = lobby
+		lobby.RunAutoRounds()
+	}
 }
 
-// HandleWebSocket upgrades HTTP to WebSocket and registers player
-func HandleWebSocket(w http.ResponseWriter, r *http.Request, gameIDStr string) {
-	gameID, _ := strconv.Atoi(gameIDStr)
-	tidStr := r.URL.Query().Get("telegram_id")
-	telegramID, _ := strconv.ParseInt(tidStr, 10, 64)
-
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Println("WebSocket upgrade error:", err)
-		return
-	}
-
-	lobby := getOrCreateLobby(uint(gameID))
-	lobby.Mutex.Lock()
-	lobby.Players[telegramID] = conn
-	lobby.Mutex.Unlock()
-
-	log.Printf("Player %d joined lobby %d", telegramID, gameID)
-
-	// Start countdown if min players reached
-	go lobby.checkStartCountdown()
-
-	// Listen to client (optional, can receive chat or commands)
-	go listenPlayer(lobby, telegramID, conn)
+// ------------------------
+// User joins/leaves lobby
+// ------------------------
+func (l *Lobby) Join(userID uint, conn *websocket.Conn) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.Clients[userID] = conn
+	l.sendState()
 }
 
-// getOrCreateLobby returns existing or creates new lobby
-func getOrCreateLobby(gameID uint) *Lobby {
-	if l, ok := Lobbies[gameID]; ok {
-		return l
-	}
-	l := &Lobby{
-		GameID:       gameID,
-		Players:      make(map[int64]*websocket.Conn),
-		Status:       "waiting",
-		Countdown:    10, // default countdown in seconds
-		DrawnNumbers: []int{},
-	}
-	Lobbies[gameID] = l
-	return l
+func (l *Lobby) Leave(userID uint) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.Clients, userID)
+	delete(l.Cards, userID)
+	l.sendState()
 }
 
-// checkStartCountdown auto-starts game if min players reached
-func (l *Lobby) checkStartCountdown() {
-	l.Mutex.Lock()
-	if l.Status != "waiting" || len(l.Players) < 2 { // min players
-		l.Mutex.Unlock()
-		return
+// ------------------------
+// Card selection
+// ------------------------
+func (l *Lobby) SelectCard(userID uint, numbers []int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.Status == "waiting" || l.Status == "countdown" {
+		l.Cards[userID] = numbers
+		l.sendState()
 	}
-	l.Status = "countdown"
-	l.Mutex.Unlock()
-
-	for i := l.Countdown; i > 0; i-- {
-		l.broadcast(map[string]interface{}{
-			"event":   "countdown",
-			"seconds": i,
-		})
-		time.Sleep(1 * time.Second)
-	}
-
-	// Start game
-	l.Mutex.Lock()
-	l.Status = "playing"
-	l.Mutex.Unlock()
-
-	l.startGame()
 }
 
-// startGame draws numbers every 2 seconds
-func (l *Lobby) startGame() {
-	allNumbers := rand.Perm(75) // Bingo numbers 0..74
-	for _, n := range allNumbers {
-		time.Sleep(2 * time.Second)
-		l.Mutex.Lock()
-		l.DrawnNumbers = append(l.DrawnNumbers, n+1)
-		l.broadcast(map[string]interface{}{
-			"event":         "number_drawn",
-			"number":        n + 1,
-			"drawn_numbers": l.DrawnNumbers,
-		})
-		l.Mutex.Unlock()
-	}
-	l.Mutex.Lock()
-	l.Status = "finished"
-	l.broadcast(map[string]interface{}{
-		"event": "game_finished",
-	})
-	l.Mutex.Unlock()
-}
+// ------------------------
+// Automatic rounds
+// ------------------------
+func (l *Lobby) RunAutoRounds() {
+	go func() {
+		for {
+			l.startCountdown(30)
 
-// broadcast sends a message to all connected players
-func (l *Lobby) broadcast(msg interface{}) {
-	for tid, conn := range l.Players {
-		if conn != nil {
-			if err := conn.WriteJSON(msg); err != nil {
-				log.Printf("Error broadcasting to player %d: %v", tid, err)
+			// Wait for countdown
+			for {
+				l.mu.Lock()
+				count := l.Countdown
+				l.mu.Unlock()
+				if count <= 0 {
+					break
+				}
+				time.Sleep(1 * time.Second)
+			}
+
+			l.startRound()
+
+			// Wait for round to finish
+			for {
+				l.mu.Lock()
+				status := l.Status
+				l.mu.Unlock()
+				if status != "in_progress" {
+					break
+				}
+				time.Sleep(1 * time.Second)
 			}
 		}
+	}()
+}
+
+// ------------------------
+// Countdown
+// ------------------------
+func (l *Lobby) startCountdown(seconds int) {
+	l.mu.Lock()
+	l.Status = "countdown"
+	l.Countdown = seconds
+	l.sendState()
+	l.mu.Unlock()
+
+	ticker := time.NewTicker(1 * time.Second)
+	go func() {
+		for range ticker.C {
+			l.mu.Lock()
+			l.Countdown--
+			l.sendState()
+			if l.Countdown <= 0 {
+				ticker.Stop()
+				l.mu.Unlock()
+				break
+			}
+			l.mu.Unlock()
+		}
+	}()
+}
+
+// ------------------------
+// Game round
+// ------------------------
+func (l *Lobby) startRound() {
+	l.mu.Lock()
+	l.Status = "in_progress"
+	l.NumbersDrawn = []string{}
+
+	// Create game in DB
+	game := models.Game{
+		Stake:        l.Stake,
+		Status:       "in_progress",
+		StartTime:    time.Now(),
+		NumbersDrawn: []string{},
+	}
+	config.DB.Create(&game)
+	l.currentGame = &game
+	l.sendState()
+	l.mu.Unlock()
+
+	// Draw numbers every 2s
+	go func() {
+		bingoNumbers := generateBingoNumbers()
+		for _, num := range bingoNumbers {
+			time.Sleep(2 * time.Second)
+			l.mu.Lock()
+			l.NumbersDrawn = append(l.NumbersDrawn, num)
+			l.currentGame.NumbersDrawn = l.NumbersDrawn
+			config.DB.Save(l.currentGame)
+			l.sendState()
+			l.mu.Unlock()
+		}
+
+		l.endRound()
+	}()
+}
+
+// ------------------------
+// End round
+// ------------------------
+func (l *Lobby) endRound() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.currentGame != nil {
+		l.currentGame.Status = "finished"
+		l.currentGame.EndTime = time.Now()
+		config.DB.Save(l.currentGame)
+
+		// Save cards
+		for userID, numbers := range l.Cards {
+			card := models.Card{
+				UserID:  userID,
+				GameID:  l.currentGame.ID,
+				Numbers: numbers,
+			}
+			config.DB.Create(&card)
+		}
+	}
+
+	// Reset lobby
+	l.Cards = make(map[uint][]int)
+	l.Status = "waiting"
+	l.Countdown = 30
+	l.NumbersDrawn = []string{}
+	l.currentGame = nil
+	l.sendState()
+}
+
+// ------------------------
+// Broadcast
+// ------------------------
+func (l *Lobby) sendState() {
+	for _, conn := range l.Clients {
+		if conn == nil {
+			continue
+		}
+		conn.WriteJSON(map[string]interface{}{
+			"stake":        l.Stake,
+			"status":       l.Status,
+			"countdown":    l.Countdown,
+			"cards":        l.Cards,
+			"numbersDrawn": l.NumbersDrawn,
+		})
 	}
 }
 
-// listenPlayer reads messages from player (optional)
-func listenPlayer(l *Lobby, telegramID int64, conn *websocket.Conn) {
-	defer func() {
-		conn.Close()
-		l.Mutex.Lock()
-		delete(l.Players, telegramID)
-		l.Mutex.Unlock()
-	}()
-
-	for {
-		var msg map[string]interface{}
-		if err := conn.ReadJSON(&msg); err != nil {
-			log.Printf("Player %d disconnected: %v", telegramID, err)
-			break
-		}
-		// handle client messages if needed
+// ------------------------
+// Generate bingo numbers
+// ------------------------
+func generateBingoNumbers() []string {
+	letters := []string{"B", "I", "N", "G", "O"}
+	numbers := make([]int, 75)
+	for i := 0; i < 75; i++ {
+		numbers[i] = i + 1
 	}
+
+	rand.Seed(time.Now().UnixNano())
+	rand.Shuffle(len(numbers), func(i, j int) { numbers[i], numbers[j] = numbers[j], numbers[i] })
+
+	result := []string{}
+	for _, n := range numbers {
+		letter := letters[(n-1)/15]
+		result = append(result, letter+strconv.Itoa(n))
+	}
+	return result
 }

@@ -3,11 +3,10 @@ package models
 import "time"
 
 type Card struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	GameID    uint      `json:"game_id"`
-	UserID    uint      `json:"user_id"`
-	Numbers   []int     `gorm:"type:json" json:"numbers"` // store as JSON array
-	Marked    []int     `gorm:"type:json" json:"marked"`  // marked numbers
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        uint  `gorm:"primaryKey"`
+	UserID    uint  `gorm:"not null"`
+	GameID    uint  `gorm:"not null"`
+	Numbers   []int `gorm:"type:jsonb" json:"numbers"` // store as JSONB array
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
