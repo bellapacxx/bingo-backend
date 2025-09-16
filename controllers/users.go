@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"log"
 	"net/http"
 	"strconv"
 
@@ -36,18 +37,23 @@ func RegisterUser(c *gin.Context) {
 // GetUser fetches a user by telegram_id
 func GetUser(c *gin.Context) {
 	tidStr := c.Param("telegram_id")
+
+	// Accept either string or number in URL
 	tid, err := strconv.ParseInt(tidStr, 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid telegram_id"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid telegram_id, must be a number"})
 		return
 	}
 
 	var user models.User
-	if err := config.DB.Where("telegram_id = ?", tid).First(&user).Error; err != nil {
+	err = config.DB.Where("telegram_id = ?", tid).First(&user).Error
+	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 			return
 		}
+		// Log the actual DB error
+		log.Printf("[ERROR] Failed to fetch user: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
