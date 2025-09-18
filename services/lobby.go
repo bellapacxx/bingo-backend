@@ -1,6 +1,8 @@
 package services
 
 import (
+	"encoding/json"
+	"log"
 	"math/rand"
 	"strconv"
 	"sync"
@@ -9,6 +11,7 @@ import (
 	"github.com/bellapacxx/bingo-backend/config"
 	"github.com/bellapacxx/bingo-backend/models"
 	"github.com/gorilla/websocket"
+	"gorm.io/datatypes"
 )
 
 type Lobby struct {
@@ -40,7 +43,7 @@ func InitLobbyService() {
 }
 
 // ------------------------
-// User joins/leaves lobby
+// User joins/leaves
 // ------------------------
 func (l *Lobby) Join(userID uint, conn *websocket.Conn) {
 	l.mu.Lock()
@@ -77,7 +80,6 @@ func (l *Lobby) RunAutoRounds() {
 		for {
 			l.startCountdown(30)
 
-			// Wait for countdown
 			for {
 				l.mu.Lock()
 				count := l.Countdown
@@ -85,12 +87,11 @@ func (l *Lobby) RunAutoRounds() {
 				if count <= 0 {
 					break
 				}
-				time.Sleep(1 * time.Second)
+				time.Sleep(time.Second)
 			}
 
 			l.startRound()
 
-			// Wait for round to finish
 			for {
 				l.mu.Lock()
 				status := l.Status
@@ -98,7 +99,7 @@ func (l *Lobby) RunAutoRounds() {
 				if status != "in_progress" {
 					break
 				}
-				time.Sleep(1 * time.Second)
+				time.Sleep(time.Second)
 			}
 		}
 	}()
@@ -114,7 +115,7 @@ func (l *Lobby) startCountdown(seconds int) {
 	l.sendState()
 	l.mu.Unlock()
 
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(time.Second)
 	go func() {
 		for range ticker.C {
 			l.mu.Lock()
@@ -131,50 +132,60 @@ func (l *Lobby) startCountdown(seconds int) {
 }
 
 // ------------------------
-// Game round
+// Start round
 // ------------------------
 func (l *Lobby) startRound() {
 	l.mu.Lock()
 	l.Status = "in_progress"
 	l.NumbersDrawn = []string{}
+	l.mu.Unlock()
 
 	// Determine next round number
 	var lastGame models.Game
-	result := config.DB.
-		Where("stake = ?", l.Stake).
-		Order("round_number DESC").
-		First(&lastGame)
+	result := config.DB.Where("stake = ?", l.Stake).Order("round_number DESC").First(&lastGame)
 	nextRound := 1
 	if result.Error == nil {
 		nextRound = lastGame.RoundNumber + 1
 	}
 
-	// Create game in DB
+	// Create new game (NumbersJSON for DB storage)
 	game := models.Game{
-		Stake:        l.Stake,
-		Status:       "in_progress",
-		StartTime:    time.Now(),
-		NumbersDrawn: []string{},
-		RoundNumber:  nextRound,
+		Stake:       l.Stake,
+		Status:      "in_progress",
+		StartTime:   time.Now(),
+		RoundNumber: nextRound,
+		NumbersJSON: datatypes.JSON([]byte("[]")), // store empty JSON
 	}
-	config.DB.Create(&game)
+	if err := config.DB.Create(&game).Error; err != nil {
+		log.Printf("[Lobby] Failed to create game: %v", err)
+		return
+	}
+
+	l.mu.Lock()
 	l.currentGame = &game
 	l.sendState()
 	l.mu.Unlock()
 
-	// Draw all numbers immediately (no 2s wait)
+	// Draw numbers asynchronously
 	go func() {
 		bingoNumbers := generateBingoNumbers()
-		l.mu.Lock()
-		defer l.mu.Unlock()
-
 		for _, num := range bingoNumbers {
+			l.mu.Lock()
 			l.NumbersDrawn = append(l.NumbersDrawn, num)
-			l.currentGame.NumbersDrawn = l.NumbersDrawn
-			config.DB.Save(l.currentGame)
-			l.sendState()
-		}
 
+			// Marshal slice to JSON before saving in DB
+			numJSON, _ := json.Marshal(l.NumbersDrawn)
+			if l.currentGame != nil {
+				l.currentGame.NumbersJSON = datatypes.JSON(numJSON)
+				if err := config.DB.Save(l.currentGame).Error; err != nil {
+					log.Printf("[Lobby] Failed to update game numbers: %v", err)
+				}
+			}
+
+			l.sendState()
+			l.mu.Unlock()
+			time.Sleep(50 * time.Millisecond)
+		}
 		l.endRound()
 	}()
 }
@@ -189,7 +200,9 @@ func (l *Lobby) endRound() {
 	if l.currentGame != nil {
 		l.currentGame.Status = "finished"
 		l.currentGame.EndTime = time.Now()
-		config.DB.Save(l.currentGame)
+		if err := config.DB.Save(l.currentGame).Error; err != nil {
+			log.Printf("[Lobby] Failed to finish game: %v", err)
+		}
 
 		// Save cards
 		for userID, numbers := range l.Cards {
@@ -198,11 +211,12 @@ func (l *Lobby) endRound() {
 				GameID:  l.currentGame.ID,
 				Numbers: numbers,
 			}
-			config.DB.Create(&card)
+			if err := config.DB.Create(&card).Error; err != nil {
+				log.Printf("[Lobby] Failed to save card: %v", err)
+			}
 		}
 	}
 
-	// Reset lobby
 	l.Cards = make(map[uint][]int)
 	l.Status = "waiting"
 	l.Countdown = 30
@@ -219,13 +233,15 @@ func (l *Lobby) sendState() {
 		if conn == nil {
 			continue
 		}
-		conn.WriteJSON(map[string]interface{}{
+		if err := conn.WriteJSON(map[string]interface{}{
 			"stake":        l.Stake,
 			"status":       l.Status,
 			"countdown":    l.Countdown,
 			"cards":        l.Cards,
 			"numbersDrawn": l.NumbersDrawn,
-		})
+		}); err != nil {
+			log.Printf("[Lobby] Failed to send state: %v", err)
+		}
 	}
 }
 
@@ -242,7 +258,7 @@ func generateBingoNumbers() []string {
 	rand.Seed(time.Now().UnixNano())
 	rand.Shuffle(len(numbers), func(i, j int) { numbers[i], numbers[j] = numbers[j], numbers[i] })
 
-	result := []string{}
+	result := make([]string, 0, 75)
 	for _, n := range numbers {
 		letter := letters[(n-1)/15]
 		result = append(result, letter+strconv.Itoa(n))

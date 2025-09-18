@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/datatypes"
+)
 
 type Game struct {
 	ID           uint   `gorm:"primaryKey"`
@@ -12,4 +16,6 @@ type Game struct {
 	EndTime      time.Time
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	NumbersJSON  datatypes.JSON // stores drawn numbers in DB
+
 }
