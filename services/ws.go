@@ -69,16 +69,45 @@ func HandleWebSocket(c *gin.Context) {
 			break
 		}
 
-		// Only handle card selection; countdown & rounds are automatic
+		// Handle card selection by card_id
 		if action, ok := msg["action"].(string); ok && action == "select_card" {
-			if numbersRaw, ok := msg["numbers"].([]interface{}); ok {
-				numbers := []int{}
-				for _, n := range numbersRaw {
-					if v, ok := n.(float64); ok {
-						numbers = append(numbers, int(v))
+			if cardIDRaw, ok := msg["card_id"].(float64); ok {
+				cardID := int(cardIDRaw)
+
+				// Find card from preloaded Cards
+				var selectedCard []int
+				found := false
+				for _, card := range Cards {
+					if card.CardID == cardID {
+						// Flatten B-I-N-G-O columns into a single slice
+						for i := 0; i < 5; i++ {
+							if i < len(card.B) {
+								selectedCard = append(selectedCard, card.B[i])
+							}
+							if i < len(card.I) {
+								selectedCard = append(selectedCard, card.I[i])
+							}
+							if i < len(card.N) {
+								selectedCard = append(selectedCard, card.N[i])
+							}
+							if i < len(card.G) {
+								selectedCard = append(selectedCard, card.G[i])
+							}
+							if i < len(card.O) {
+								selectedCard = append(selectedCard, card.O[i])
+							}
+						}
+						found = true
+						break
 					}
 				}
-				lobby.SelectCard(user.ID, numbers)
+
+				if found {
+					lobby.SelectCard(user.ID, selectedCard)
+					log.Printf("[WS] User %d selected card %d", user.ID, cardID)
+				} else {
+					log.Printf("[WS] Card ID %d not found", cardID)
+				}
 			}
 		}
 	}
