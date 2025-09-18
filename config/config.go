@@ -9,6 +9,7 @@ import (
 	"github.com/joho/godotenv"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 var (
@@ -35,6 +36,7 @@ func SetupDatabase() *gorm.DB {
 			PreferSimpleProtocol: true,
 		}), &gorm.Config{
 			PrepareStmt: false,
+			Logger:      logger.Default.LogMode(logger.Silent),
 		})
 		if err != nil {
 			log.Fatalf("[FATAL] Failed to connect to DB: %v", err)
