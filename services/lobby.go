@@ -163,20 +163,22 @@ func (l *Lobby) startRound() {
 	l.mu.Unlock()
 
 	// Draw numbers every 2s
+	// Draw all numbers immediately
 	go func() {
 		bingoNumbers := generateBingoNumbers()
+		l.mu.Lock()
+		defer l.mu.Unlock()
+
 		for _, num := range bingoNumbers {
-			time.Sleep(2 * time.Second)
-			l.mu.Lock()
 			l.NumbersDrawn = append(l.NumbersDrawn, num)
 			l.currentGame.NumbersDrawn = l.NumbersDrawn
 			config.DB.Save(l.currentGame)
 			l.sendState()
-			l.mu.Unlock()
 		}
 
 		l.endRound()
 	}()
+
 }
 
 // ------------------------
