@@ -299,16 +299,19 @@ func (l *Lobby) endRound() {
 // Broadcast
 // ------------------------
 func (l *Lobby) sendState() {
+	availableCards := GetAvailableCards()
 	for _, conn := range l.Clients {
 		if conn == nil {
 			continue
 		}
 		if err := conn.WriteJSON(map[string]interface{}{
-			"stake":        l.Stake,
-			"status":       l.Status,
-			"countdown":    l.Countdown,
-			"cards":        l.Cards,
-			"numbersDrawn": l.NumbersDrawn,
+			"stake":          l.Stake,
+			"status":         l.Status,
+			"countdown":      l.Countdown,
+			"cards":          l.Cards,
+			"numbersDrawn":   l.NumbersDrawn,
+			"selectedCards":  l.Cards,        // already selected by users
+			"availableCards": availableCards, // cards available for selection
 		}); err != nil {
 			log.Printf("[Lobby] Failed to send state: %v", err)
 		}
