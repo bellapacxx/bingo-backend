@@ -2,6 +2,7 @@ package routes
 
 import (
 	"github.com/bellapacxx/bingo-backend/controllers"
+	"github.com/bellapacxx/bingo-backend/services"
 	"github.com/gin-gonic/gin"
 )
 
@@ -34,6 +35,11 @@ func SetupRoutes(r *gin.Engine) {
 	// ----------------------
 	api.POST("/deposit", controllers.Deposit)   // Deposit funds
 	api.POST("/withdraw", controllers.Withdraw) // Withdraw funds
+
+	// ----------------------
+	// Lobby WebSocket
+	// ----------------------
+	api.GET("/lobby/:stake", services.HandleWebSocket)
 
 	// ----------------------
 	// Health check
