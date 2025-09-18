@@ -45,13 +45,13 @@ func LoadCards() {
 	log.Printf("Loaded %d bingo cards", len(Cards))
 }
 
-func GetAvailableCards() []BingoCard {
-	cardsMu.Lock()
-	defer cardsMu.Unlock()
+func (l *Lobby) GetAvailableCards() []BingoCard {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
 	available := []BingoCard{}
 	for _, card := range Cards {
-		if !selectedIDs[card.CardID] {
+		if !l.SelectedIDs[card.CardID] {
 			available = append(available, card)
 		}
 	}
@@ -71,6 +71,7 @@ type Lobby struct {
 	Stake        int
 	Clients      map[uint]*websocket.Conn
 	Cards        map[uint][]int
+	SelectedIDs  map[int]bool
 	Status       string // "waiting" | "countdown" | "in_progress"
 	Countdown    int
 	NumbersDrawn []string
@@ -86,10 +87,11 @@ func InitLobbyService() {
 	LoadCards() // Load cards on startup
 	for _, stake := range Stakes {
 		lobby := &Lobby{
-			Stake:   stake,
-			Clients: make(map[uint]*websocket.Conn),
-			Cards:   make(map[uint][]int),
-			Status:  "waiting",
+			Stake:       stake,
+			Clients:     make(map[uint]*websocket.Conn),
+			Cards:       make(map[uint][]int),
+			SelectedIDs: make(map[int]bool),
+			Status:      "waiting",
 		}
 		Lobbies[stake] = lobby
 		lobby.RunAutoRounds()
@@ -124,11 +126,16 @@ func (l *Lobby) SelectCard(userID uint, cardID int) {
 		return
 	}
 
-	// find card
+	// Check if card already selected
+	if l.SelectedIDs[cardID] {
+		return
+	}
+
+	// Find card numbers
 	var numbers []int
 	found := false
 	for _, c := range Cards {
-		if c.CardID == cardID && !selectedIDs[cardID] {
+		if c.CardID == cardID {
 			numbers = append(numbers, c.B...)
 			numbers = append(numbers, c.I...)
 			numbers = append(numbers, c.N...)
@@ -142,8 +149,10 @@ func (l *Lobby) SelectCard(userID uint, cardID int) {
 		return
 	}
 
+	// Mark selected
 	l.Cards[userID] = numbers
-	MarkCardSelected(cardID)
+	l.SelectedIDs[cardID] = true
+
 	l.sendState()
 }
 
@@ -299,7 +308,20 @@ func (l *Lobby) endRound() {
 // Broadcast
 // ------------------------
 func (l *Lobby) sendState() {
-	availableCards := GetAvailableCards()
+	availableCards := l.GetAvailableCards()
+
+	// Build selectedCards map: cardID -> numbers
+	selectedMap := make(map[int][]int)
+	for _, numbers := range l.Cards {
+		for _, c := range Cards {
+			flat := append(append(append(append(c.B, c.I...), c.N...), c.G...), c.O...)
+			if equalSlice(flat, numbers) {
+				selectedMap[c.CardID] = numbers
+				break
+			}
+		}
+	}
+
 	for _, conn := range l.Clients {
 		if conn == nil {
 			continue
@@ -308,10 +330,9 @@ func (l *Lobby) sendState() {
 			"stake":          l.Stake,
 			"status":         l.Status,
 			"countdown":      l.Countdown,
-			"cards":          l.Cards,
 			"numbersDrawn":   l.NumbersDrawn,
-			"selectedCards":  l.Cards,        // already selected by users
-			"availableCards": availableCards, // cards available for selection
+			"availableCards": availableCards,
+			"selectedCards":  selectedMap,
 		}); err != nil {
 			log.Printf("[Lobby] Failed to send state: %v", err)
 		}
@@ -337,4 +358,15 @@ func generateBingoNumbers() []string {
 		result = append(result, letter+strconv.Itoa(n))
 	}
 	return result
+}
+func equalSlice(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
