@@ -162,8 +162,7 @@ func (l *Lobby) startRound() {
 	l.sendState()
 	l.mu.Unlock()
 
-	// Draw numbers every 2s
-	// Draw all numbers immediately
+	// Draw all numbers immediately (no 2s wait)
 	go func() {
 		bingoNumbers := generateBingoNumbers()
 		l.mu.Lock()
@@ -178,7 +177,6 @@ func (l *Lobby) startRound() {
 
 		l.endRound()
 	}()
-
 }
 
 // ------------------------
