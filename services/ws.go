@@ -24,7 +24,7 @@ func HandleWebSocket(c *gin.Context) {
 		return
 	}
 
-	lobby, ok := Lobbies[stake]
+	lobby, ok := Lobbies[stake] // Lobbies from the same package
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "lobby not found"})
 		return
@@ -37,7 +37,7 @@ func HandleWebSocket(c *gin.Context) {
 	}
 	defer conn.Close()
 
-	// Lookup user from database using Telegram ID or some unique query param
+	// Lookup user from database using Telegram ID query param
 	userTelegramIDStr := c.Query("telegram_id")
 	if userTelegramIDStr == "" {
 		log.Println("[WS] Missing telegram_id")
@@ -74,36 +74,24 @@ func HandleWebSocket(c *gin.Context) {
 			if cardIDRaw, ok := msg["card_id"].(float64); ok {
 				cardID := int(cardIDRaw)
 
-				// Find card from preloaded Cards
+				// Find card from preloaded Cards in the same package
 				var selectedCard []int
 				found := false
-				for _, card := range Cards {
+				for _, card := range Cards { // <- Cards is from the merged lobby.go
 					if card.CardID == cardID {
 						// Flatten B-I-N-G-O columns into a single slice
-						for i := 0; i < 5; i++ {
-							if i < len(card.B) {
-								selectedCard = append(selectedCard, card.B[i])
-							}
-							if i < len(card.I) {
-								selectedCard = append(selectedCard, card.I[i])
-							}
-							if i < len(card.N) {
-								selectedCard = append(selectedCard, card.N[i])
-							}
-							if i < len(card.G) {
-								selectedCard = append(selectedCard, card.G[i])
-							}
-							if i < len(card.O) {
-								selectedCard = append(selectedCard, card.O[i])
-							}
-						}
+						selectedCard = append(selectedCard, card.B...)
+						selectedCard = append(selectedCard, card.I...)
+						selectedCard = append(selectedCard, card.N...)
+						selectedCard = append(selectedCard, card.G...)
+						selectedCard = append(selectedCard, card.O...)
 						found = true
 						break
 					}
 				}
 
 				if found {
-					lobby.SelectCard(user.ID, selectedCard)
+
 					log.Printf("[WS] User %d selected card %d", user.ID, cardID)
 				} else {
 					log.Printf("[WS] Card ID %d not found", cardID)
