@@ -10,6 +10,7 @@ import (
 	"github.com/bellapacxx/bingo-backend/routes"
 	"github.com/bellapacxx/bingo-backend/services"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
@@ -48,6 +49,7 @@ func setupRouter() *gin.Engine {
 }
 
 func main() {
+	r := gin.Default()
 	// Load env variables
 	initEnv()
 
@@ -56,7 +58,15 @@ func main() {
 
 	// Initialize in-memory lobby service
 	services.InitLobbyService()
-
+	// CORS middleware
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"http://localhost:3000"}, // your frontend origin
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}))
 	// Setup Gin router
 	router := setupRouter()
 
