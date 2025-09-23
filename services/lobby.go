@@ -2,138 +2,132 @@ package services
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/rand"
-	"os"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/bellapacxx/bingo-backend/config"
 	"github.com/bellapacxx/bingo-backend/models"
-	"github.com/gorilla/websocket"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
 
-// ------------------------
-// Bingo card definitions
-// ------------------------
-type BingoCard struct {
-	B      []int `json:"B"`
-	I      []int `json:"I"`
-	N      []int `json:"N"`
-	G      []int `json:"G"`
-	O      []int `json:"O"`
-	CardID int   `json:"card_id"`
+const (
+	DefaultCountdownSec = 30
+	DrawIntervalMS      = 200 // 1 number per 200ms
+)
+
+type Lobby struct {
+	Stake        int
+	clients      map[uint]*Client
+	Cards        map[uint][]int
+	CardIDs      map[uint]int
+	selectedIDs  map[int]bool
+	Status       string
+	Countdown    int
+	NumbersDrawn []string
+	roundDone    chan struct{}
+
+	mu          sync.RWMutex
+	currentGame *models.Game
+	// New: store current round winner
+	BingoWinner       *uint
+	BingoWinnerCardID *int // cardID ✅
 }
 
 var (
-	Cards       []BingoCard
-	cardsMu     sync.Mutex
-	selectedIDs map[int]bool
+	Lobbies   = make(map[int]*Lobby)
+	LobbiesMu sync.Mutex
+	Stakes    = []int{10, 20, 50, 100}
 )
 
-func LoadCards() {
-	data, err := os.ReadFile("cards.json")
-	if err != nil {
-		log.Fatalf("Failed to read cards.json: %v", err)
-	}
-	if err := json.Unmarshal(data, &Cards); err != nil {
-		log.Fatalf("Failed to unmarshal cards.json: %v", err)
-	}
-	selectedIDs = make(map[int]bool)
-	log.Printf("Loaded %d bingo cards", len(Cards))
-}
-
-func (l *Lobby) GetAvailableCards() []BingoCard {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	available := []BingoCard{}
-	for _, card := range Cards {
-		if !l.SelectedIDs[card.CardID] {
-			available = append(available, card)
-		}
-	}
-	return available
-}
-
-func MarkCardSelected(cardID int) {
-	cardsMu.Lock()
-	defer cardsMu.Unlock()
-	selectedIDs[cardID] = true
-}
-
-// ------------------------
-// Lobby service
-// ------------------------
-type Lobby struct {
-	Stake        int
-	Clients      map[uint]*websocket.Conn
-	Cards        map[uint][]int
-	SelectedIDs  map[int]bool
-	Status       string // "waiting" | "countdown" | "in_progress"
-	Countdown    int
-	NumbersDrawn []string
-	mu           sync.Mutex
-	currentGame  *models.Game
-}
-
-// Predefined stakes
-var Stakes = []int{10, 20, 50, 100}
-var Lobbies = map[int]*Lobby{}
-
 func InitLobbyService() {
-	LoadCards() // Load cards on startup
+	LoadCards()
 	for _, stake := range Stakes {
-		lobby := &Lobby{
+		l := &Lobby{
 			Stake:       stake,
-			Clients:     make(map[uint]*websocket.Conn),
+			clients:     make(map[uint]*Client),
 			Cards:       make(map[uint][]int),
-			SelectedIDs: make(map[int]bool),
+			CardIDs:     make(map[uint]int),
+			selectedIDs: make(map[int]bool),
 			Status:      "waiting",
+			Countdown:   DefaultCountdownSec,
+			roundDone:   make(chan struct{}, 1),
 		}
-		Lobbies[stake] = lobby
-		lobby.RunAutoRounds()
+		Lobbies[stake] = l
+		go l.RunAutoRounds()
 	}
+	log.Printf("[Init] Started %d lobbies", len(Lobbies))
 }
 
-// ------------------------
-// User joins/leaves
-// ------------------------
-func (l *Lobby) Join(userID uint, conn *websocket.Conn) {
+// -------------------- Client management --------------------
+func (l *Lobby) addClient(c *Client) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.Clients[userID] = conn
-	l.sendState()
+	if old, ok := l.clients[c.userID]; ok {
+		old.Close() // safe closure
+	}
+	l.clients[c.userID] = c
+	l.mu.Unlock()
+
+	go c.writePump()
+	go c.readPump()
+
+	log.Printf("[Lobby %d] user %d joined (total=%d)", l.Stake, c.userID, l.clientCount())
+	go l.broadcastState()
 }
 
-func (l *Lobby) Leave(userID uint) {
+func (l *Lobby) removeClient(userID uint) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	delete(l.Clients, userID)
+	client, ok := l.clients[userID]
+	if ok {
+		delete(l.clients, userID)
+		client.Close() // safe closure
+	}
+	if cardID, ok := l.CardIDs[userID]; ok {
+		delete(l.selectedIDs, cardID)
+		delete(l.CardIDs, userID)
+	}
 	delete(l.Cards, userID)
-	l.sendState()
+	l.mu.Unlock()
+
+	l.broadcastState()
 }
 
-// ------------------------
-// Card selection
-// ------------------------
-func (l *Lobby) SelectCard(userID uint, cardID int) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.Status != "waiting" && l.Status != "countdown" {
-		return
+func (l *Lobby) clientCount() int {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return len(l.clients)
+}
+
+// -------------------- Card selection --------------------
+func (l *Lobby) canSelectCard() bool {
+	return l.Status == "waiting" || l.Status == "countdown"
+}
+
+func (l *Lobby) SelectCard(userID uint, cardID int) bool {
+	// Step 1: Read the global Cards slice safely
+	// 1️⃣ Fetch user from DB
+	var user models.User
+	if err := config.DB.First(&user, userID).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Printf("[Lobby %d] User %d not found", l.Stake, userID)
+			return false
+		}
+		log.Printf("[Lobby %d] DB error fetching user %d: %v", l.Stake, userID, err)
+		return false
 	}
 
-	// Check if card already selected
-	if l.SelectedIDs[cardID] {
-		return
+	// 2️⃣ Check balance
+	if user.Balance < float64(l.Stake) {
+		l.notifyUser(userID, "Insufficient balance to select this card.")
+		log.Printf("[Lobby %d] User %d cannot select card %d: insufficient balance %.2f < %d", l.Stake, userID, cardID, user.Balance, l.Stake)
+		return false
 	}
-
-	// Find card numbers
 	var numbers []int
-	found := false
+	cardsMu.RLock()
 	for _, c := range Cards {
 		if c.CardID == cardID {
 			numbers = append(numbers, c.B...)
@@ -141,89 +135,310 @@ func (l *Lobby) SelectCard(userID uint, cardID int) {
 			numbers = append(numbers, c.N...)
 			numbers = append(numbers, c.G...)
 			numbers = append(numbers, c.O...)
-			found = true
 			break
 		}
 	}
-	if !found {
+	cardsMu.RUnlock()
+
+	if len(numbers) == 0 {
+		log.Printf("[Lobby %d] invalid cardID %d", l.Stake, cardID)
+		return false
+	}
+
+	// Step 2: Lock the lobby to safely update internal state
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Check if card selection is allowed
+	if !l.canSelectCard() {
+		log.Printf("[Lobby %d] User %d tried to select card %d but round in progress", l.Stake, userID, cardID)
+		return false
+	}
+
+	// Check if the card is already taken
+	if l.selectedIDs[cardID] {
+		log.Printf("[Lobby %d] Card %d already taken", l.Stake, cardID)
+		return false
+	}
+
+	// Update lobby maps
+	l.Cards[userID] = numbers
+	l.CardIDs[userID] = cardID
+	l.selectedIDs[cardID] = true
+
+	log.Printf("[Lobby %d] User %d selected card %d", l.Stake, userID, cardID)
+
+	// Step 3: Unlock before broadcasting to prevent deadlocks
+	l.mu.Unlock()
+	l.broadcastState()
+	l.mu.Lock() // relock to satisfy defer
+	return true
+}
+
+func (l *Lobby) CheckBingo(userID uint) bool {
+	l.mu.RLock()
+	numbers, ok := l.Cards[userID]
+	l.mu.RUnlock()
+	log.Printf("checking")
+	if !ok {
+		log.Printf("[Lobby %d] User %d tried Bingo without a card", l.Stake, userID)
+		return false
+	}
+
+	// Convert drawn numbers to a set for O(1) lookup
+	l.mu.RLock()
+	drawnSet := make(map[int]bool)
+	for _, n := range l.NumbersDrawn {
+		num, _ := strconv.Atoi(n)
+		drawnSet[num] = true
+	}
+	l.mu.RUnlock()
+
+	// Build 5x5 grid
+	grid := make([][]int, 5)
+	for i := 0; i < 5; i++ {
+		grid[i] = numbers[i*5 : (i+1)*5]
+	}
+
+	bingo := false
+
+	// --- 1. Full card ---
+	full := true
+	for _, row := range grid {
+		for _, n := range row {
+			if !drawnSet[n] {
+				full = false
+				break
+			}
+		}
+		if !full {
+			break
+		}
+	}
+	if full {
+		bingo = true
+	}
+
+	// --- 2. Horizontal lines ---
+	if !bingo {
+		for _, row := range grid {
+			lineComplete := true
+			for _, n := range row {
+				if !drawnSet[n] {
+					lineComplete = false
+					break
+				}
+			}
+			if lineComplete {
+				bingo = true
+				break
+			}
+		}
+	}
+
+	// --- 3. Vertical lines ---
+	if !bingo {
+		for col := 0; col < 5; col++ {
+			colComplete := true
+			for row := 0; row < 5; row++ {
+				if !drawnSet[grid[row][col]] {
+					colComplete = false
+					break
+				}
+			}
+			if colComplete {
+				bingo = true
+				break
+			}
+		}
+	}
+
+	// --- 4. Corners ---
+	if !bingo {
+		corners := []int{
+			grid[0][0],
+			grid[0][4],
+			grid[4][0],
+			grid[4][4],
+		}
+		cornersComplete := true
+		for _, n := range corners {
+			if !drawnSet[n] {
+				cornersComplete = false
+				break
+			}
+		}
+		if cornersComplete {
+			bingo = true
+		}
+	}
+
+	if bingo {
+		log.Printf("[Lobby %d] User %d claims BINGO!", l.Stake, userID)
+
+		// 1️⃣ Store winner info in lobby
+		l.mu.Lock()
+		l.BingoWinner = &userID
+		if cid, ok := l.CardIDs[userID]; ok {
+			l.BingoWinnerCardID = &cid
+			log.Printf("[Lobby %d] BingoWinnerCardID set to %d for user %d", l.Stake, cid, userID)
+		}
+		// Count participants for payout
+		joinedUsers := len(l.Cards)
+		l.mu.Unlock()
+
+		// 2️⃣ Calculate payout
+		totalPot := float64(l.Stake * joinedUsers)
+		winnings := totalPot * 0.8 // 80% goes to winner
+
+		// 3️⃣ Update winner balance in DB
+		var winner models.User
+		if err := config.DB.First(&winner, userID).Error; err == nil {
+			winner.Balance += winnings
+			if err := config.DB.Save(&winner).Error; err != nil {
+				log.Printf("[Lobby %d] failed to update winner balance for user %d: %v", l.Stake, userID, err)
+			} else {
+				// Notify winner
+				l.notifyUser(userID, fmt.Sprintf("🎉 You won BINGO! Winnings: %.2f", winnings))
+			}
+		} else {
+			log.Printf("[Lobby %d] failed to fetch winner user %d: %v", l.Stake, userID, err)
+		}
+
+		l.broadcastState() // unified broadcast
+
+		// Delay round ending for 10 seconds
+		go func() {
+			time.Sleep(10 * time.Second)
+			l.endRound()
+		}()
+
+		return true
+	}
+
+	return false
+}
+
+func (l *Lobby) notifyUser(userID uint, message string) {
+	l.mu.RLock()
+	client, ok := l.clients[userID]
+	l.mu.RUnlock()
+
+	if !ok {
+		log.Printf("[Lobby %d] Cannot notify user %d: client not found", l.Stake, userID)
 		return
 	}
 
-	// Mark selected
-	l.Cards[userID] = numbers
-	l.SelectedIDs[cardID] = true
+	payload := map[string]string{
+		"type":    "notification",
+		"message": message,
+	}
 
-	l.sendState()
+	b, _ := json.Marshal(payload)
+
+	select {
+	case client.send <- b:
+	default:
+		log.Printf("[Lobby %d] dropping notification to user %d", l.Stake, userID)
+	}
 }
 
-// ------------------------
-// Automatic rounds
-// ------------------------
+// -------------------- Auto Rounds --------------------
 func (l *Lobby) RunAutoRounds() {
-	go func() {
-		for {
-			l.startCountdown(30)
-
-			for {
-				l.mu.Lock()
-				count := l.Countdown
-				l.mu.Unlock()
-				if count <= 0 {
-					break
-				}
-				time.Sleep(time.Second)
-			}
-
-			l.startRound()
-
-			for {
-				l.mu.Lock()
-				status := l.Status
-				l.mu.Unlock()
-				if status != "in_progress" {
-					break
-				}
-				time.Sleep(time.Second)
-			}
+	for {
+		// Skip if round already in progress
+		l.mu.RLock()
+		inProgress := l.Status == "in_progress"
+		l.mu.RUnlock()
+		if inProgress {
+			time.Sleep(500 * time.Millisecond)
+			continue
 		}
-	}()
-}
 
-// ------------------------
-// Countdown
-// ------------------------
-func (l *Lobby) startCountdown(seconds int) {
-	l.mu.Lock()
-	l.Status = "countdown"
-	l.Countdown = seconds
-	l.sendState()
-	l.mu.Unlock()
+		// Countdown
+		l.mu.Lock()
+		l.Status = "countdown"
+		l.Countdown = DefaultCountdownSec
+		l.mu.Unlock()
+		l.broadcastState()
 
-	ticker := time.NewTicker(time.Second)
-	go func() {
-		for range ticker.C {
+		for i := DefaultCountdownSec; i > 0; i-- {
 			l.mu.Lock()
-			l.Countdown--
-			l.sendState()
-			if l.Countdown <= 0 {
-				ticker.Stop()
-				l.mu.Unlock()
-				break
-			}
+			l.Countdown = i
 			l.mu.Unlock()
+			l.broadcastState()
+			time.Sleep(1 * time.Second)
 		}
-	}()
+
+		// ✅ Require at least 2 selected cards
+		l.mu.RLock()
+		cardCount := len(l.CardIDs)
+		l.mu.RUnlock()
+
+		if cardCount < 2 {
+
+			l.mu.Lock()
+			l.Status = "waiting"
+			l.Countdown = DefaultCountdownSec
+			l.mu.Unlock()
+			l.broadcastState()
+			continue // skip starting the round
+		}
+
+		// Start round safely
+		l.startRound()
+
+		// Wait for round to finish
+		<-l.roundDone
+	}
 }
 
-// ------------------------
-// Start round
-// ------------------------
 func (l *Lobby) startRound() {
+	// 1️⃣ Set round status
 	l.mu.Lock()
 	l.Status = "in_progress"
 	l.NumbersDrawn = []string{}
 	l.mu.Unlock()
+	l.broadcastState()
 
+	// 1.5️⃣ Deduct stake from all users who selected a card
+	l.mu.RLock()
+	selectedUsers := make(map[uint]int, len(l.CardIDs)) // userID -> cardID
+	for userID, cardID := range l.CardIDs {
+		selectedUsers[userID] = cardID
+	}
+	l.mu.RUnlock()
+
+	for userID, cardID := range selectedUsers {
+		var user models.User
+		if err := config.DB.First(&user, userID).Error; err != nil {
+			log.Printf("[Lobby %d] failed to fetch user %d for stake deduction: %v", l.Stake, userID, err)
+			continue
+		}
+
+		if user.Balance >= float64(l.Stake) {
+			user.Balance -= float64(l.Stake)
+			if err := config.DB.Save(&user).Error; err != nil {
+				log.Printf("[Lobby %d] failed to deduct stake from user %d: %v", l.Stake, userID, err)
+				continue
+			}
+
+			// Notify the user
+			//l.notifyUser(userID, fmt.Sprintf("Your stake of %d has been deducted for this round.", l.Stake))
+		} else {
+			log.Printf("[Lobby %d] user %d has insufficient balance during startRound", l.Stake, userID)
+			l.notifyUser(userID, "Insufficient balance for this round. Your card has been removed.")
+
+			// Remove card safely
+			l.mu.Lock()
+			delete(l.Cards, userID)
+			delete(l.CardIDs, userID)
+			delete(l.selectedIDs, cardID)
+			l.mu.Unlock()
+		}
+	}
+
+	// 2️⃣ Create a new game
 	var lastGame models.Game
 	result := config.DB.Where("stake = ?", l.Stake).Order("round_number DESC").First(&lastGame)
 	nextRound := 1
@@ -238,135 +453,171 @@ func (l *Lobby) startRound() {
 		RoundNumber: nextRound,
 		NumbersJSON: datatypes.JSON([]byte("[]")),
 	}
+
 	if err := config.DB.Create(&game).Error; err != nil {
-		log.Printf("[Lobby] Failed to create game: %v", err)
-		return
+		log.Printf("[Lobby %d] failed to create game: %v", l.Stake, err)
+	} else {
+		l.mu.Lock()
+		l.currentGame = &game
+		l.mu.Unlock()
 	}
 
-	l.mu.Lock()
-	l.currentGame = &game
-	l.sendState()
-	l.mu.Unlock()
-
+	// 3️⃣ Draw numbers in a goroutine
 	go func() {
-		bingoNumbers := generateBingoNumbers()
-		for _, num := range bingoNumbers {
-			l.mu.Lock()
-			l.NumbersDrawn = append(l.NumbersDrawn, num)
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[Lobby %d] startRound panic: %v", l.Stake, r)
+			}
+			l.endRound()
+		}()
 
-			numJSON, _ := json.Marshal(l.NumbersDrawn)
+		numbers := generateBingoNumbers()
+
+		for _, n := range numbers {
+			l.mu.Lock()
+			l.NumbersDrawn = append(l.NumbersDrawn, strconv.Itoa(n))
 			if l.currentGame != nil {
-				l.currentGame.NumbersJSON = datatypes.JSON(numJSON)
-				if err := config.DB.Save(l.currentGame).Error; err != nil {
-					log.Printf("[Lobby] Failed to update game numbers: %v", err)
+				if jsonBytes, err := json.Marshal(l.NumbersDrawn); err == nil {
+					l.currentGame.NumbersJSON = datatypes.JSON(jsonBytes)
+					_ = config.DB.Save(l.currentGame).Error
 				}
 			}
-
-			l.sendState()
 			l.mu.Unlock()
-			time.Sleep(50 * time.Millisecond)
+
+			// Broadcast after updating NumbersDrawn
+			l.broadcastState()
 		}
-		l.endRound()
 	}()
 }
 
-// ------------------------
-// End round
-// ------------------------
 func (l *Lobby) endRound() {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-
 	if l.currentGame != nil {
 		l.currentGame.Status = "finished"
 		l.currentGame.EndTime = time.Now()
-		if err := config.DB.Save(l.currentGame).Error; err != nil {
-			log.Printf("[Lobby] Failed to finish game: %v", err)
-		}
-
-		for userID, numbers := range l.Cards {
-			card := models.Card{
-				UserID:  userID,
-				GameID:  l.currentGame.ID,
-				Numbers: numbers,
-			}
-			if err := config.DB.Create(&card).Error; err != nil {
-				log.Printf("[Lobby] Failed to save card: %v", err)
-			}
-		}
+		_ = config.DB.Save(l.currentGame).Error
 	}
-
+	log.Printf("ending")
+	// Reset state
 	l.Cards = make(map[uint][]int)
+	l.CardIDs = make(map[uint]int)
+	l.selectedIDs = make(map[int]bool)
 	l.Status = "waiting"
-	l.Countdown = 30
+	l.Countdown = DefaultCountdownSec
 	l.NumbersDrawn = []string{}
 	l.currentGame = nil
-	l.sendState()
+	l.BingoWinner = nil
+	l.BingoWinnerCardID = nil
+
+	l.mu.Unlock() // unlock before broadcast and channel send
+
+	l.broadcastState()
+
+	// Signal auto-round loop
+	l.roundDone <- struct{}{} // **blocking send** guarantees next round starts
 }
 
-// ------------------------
-// Broadcast
-// ------------------------
-func (l *Lobby) sendState() {
-	availableCards := l.GetAvailableCards()
+// -------------------- Broadcast --------------------
+type broadcastState struct {
+	Stake             int             `json:"stake"`
+	Status            string          `json:"status"`
+	Countdown         int             `json:"countdown"`
+	NumbersDrawn      []string        `json:"numbersDrawn"`
+	Cards             map[uint][]int  `json:"cards"`
+	Selected          map[uint]int    `json:"selected"`
+	AvailableCards    []CardBroadcast `json:"availableCards"` // send full cards
+	BingoWinner       *uint
+	BingoWinnerCardID *int `json:"bingoWinnerCardId"`
+}
+type CardBroadcast struct {
+	CardID int   `json:"card_id"`
+	B      []int `json:"B"`
+	I      []int `json:"I"`
+	N      []int `json:"N"`
+	G      []int `json:"G"`
+	O      []int `json:"O"`
+	Taken  bool  `json:"taken"`
+}
 
-	// Build selectedCards map: cardID -> numbers
-	selectedMap := make(map[int][]int)
-	for _, numbers := range l.Cards {
-		for _, c := range Cards {
-			flat := append(append(append(append(c.B, c.I...), c.N...), c.G...), c.O...)
-			if equalSlice(flat, numbers) {
-				selectedMap[c.CardID] = numbers
-				break
+func (l *Lobby) broadcastState() {
+	l.mu.RLock()
+
+	state := broadcastState{
+		Stake:             l.Stake,
+		Status:            l.Status,
+		Countdown:         l.Countdown,
+		NumbersDrawn:      append([]string(nil), l.NumbersDrawn...),
+		Cards:             copyCardsMap(l.Cards),
+		Selected:          copySelectedMap(l.CardIDs),
+		AvailableCards:    copyCardsMapWithTaken(l.selectedIDs), // all cards
+		BingoWinner:       l.BingoWinner,
+		BingoWinnerCardID: l.BingoWinnerCardID, // automatically included
+	}
+	clients := make([]*Client, 0, len(l.clients))
+	for _, c := range l.clients {
+		clients = append(clients, c)
+	}
+	l.mu.RUnlock()
+
+	b, _ := json.Marshal(state)
+	for _, c := range clients {
+		func(c *Client) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[Lobby %d] recovered broadcast to user %d: %v", l.Stake, c.userID, r)
+				}
+			}()
+			select {
+			case c.send <- b:
+			default:
+				log.Printf("[Lobby %d] dropping msg to user %d", l.Stake, c.userID)
 			}
-		}
+		}(c)
 	}
 
-	for _, conn := range l.Clients {
-		if conn == nil {
-			continue
-		}
-		if err := conn.WriteJSON(map[string]interface{}{
-			"stake":          l.Stake,
-			"status":         l.Status,
-			"countdown":      l.Countdown,
-			"numbersDrawn":   l.NumbersDrawn,
-			"availableCards": availableCards,
-			"selectedCards":  selectedMap,
-		}); err != nil {
-			log.Printf("[Lobby] Failed to send state: %v", err)
+}
+func copyCardsMapWithTaken(selectedIDs map[int]bool) []CardBroadcast {
+	cardsMu.RLock()
+	defer cardsMu.RUnlock()
+
+	out := make([]CardBroadcast, len(Cards))
+	for i, c := range Cards {
+		out[i] = CardBroadcast{
+			CardID: c.CardID,
+			B:      append([]int(nil), c.B...),
+			I:      append([]int(nil), c.I...),
+			N:      append([]int(nil), c.N...),
+			G:      append([]int(nil), c.G...),
+			O:      append([]int(nil), c.O...),
+			Taken:  selectedIDs[c.CardID],
 		}
 	}
+	return out
 }
 
-// ------------------------
-// Generate bingo numbers
-// ------------------------
-func generateBingoNumbers() []string {
-	letters := []string{"B", "I", "N", "G", "O"}
-	numbers := make([]int, 75)
-	for i := 0; i < 75; i++ {
-		numbers[i] = i + 1
+func copyCardsMap(in map[uint][]int) map[uint][]int {
+	out := make(map[uint][]int, len(in))
+	for k, v := range in {
+		out[k] = append([]int(nil), v...)
 	}
-
-	rand.Seed(time.Now().UnixNano())
-	rand.Shuffle(len(numbers), func(i, j int) { numbers[i], numbers[j] = numbers[j], numbers[i] })
-
-	result := make([]string, 0, 75)
-	for _, n := range numbers {
-		letter := letters[(n-1)/15]
-		result = append(result, letter+strconv.Itoa(n))
-	}
-	return result
+	return out
 }
-func equalSlice(a, b []int) bool {
-	if len(a) != len(b) {
-		return false
+
+func copySelectedMap(in map[uint]int) map[uint]int {
+	out := make(map[uint]int, len(in))
+	for k, v := range in {
+		out[k] = v
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
+	return out
+}
+
+// -------------------- Helpers --------------------
+func generateBingoNumbers() []int {
+	nums := make([]int, 75)
+	for i := range nums {
+		nums[i] = i + 1
 	}
-	return true
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	r.Shuffle(len(nums), func(i, j int) { nums[i], nums[j] = nums[j], nums[i] })
+	return nums
 }
