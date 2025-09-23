@@ -474,8 +474,11 @@ func (l *Lobby) startRound() {
 		numbers := generateBingoNumbers()
 
 		for _, n := range numbers {
+			time.Sleep(1 * time.Second) // 🔹 delay 1s per number
+
 			l.mu.Lock()
 			l.NumbersDrawn = append(l.NumbersDrawn, strconv.Itoa(n))
+
 			if l.currentGame != nil {
 				if jsonBytes, err := json.Marshal(l.NumbersDrawn); err == nil {
 					l.currentGame.NumbersJSON = datatypes.JSON(jsonBytes)
@@ -484,10 +487,11 @@ func (l *Lobby) startRound() {
 			}
 			l.mu.Unlock()
 
-			// Broadcast after updating NumbersDrawn
+			// Broadcast after unlocking to avoid deadlock
 			l.broadcastState()
 		}
 	}()
+
 }
 
 func (l *Lobby) endRound() {
