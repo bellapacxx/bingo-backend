@@ -35,7 +35,9 @@ func setupRouter() *gin.Engine {
 	r.Use(gin.Recovery())
 	// CORS middleware
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:3000"}, // your frontend origin
+		AllowOrigins: []string{
+			"http://localhost:3000",
+			"https://bot-frontend-urwm.vercel.app"}, // your frontend origin
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
 		ExposeHeaders:    []string{"Content-Length"},
