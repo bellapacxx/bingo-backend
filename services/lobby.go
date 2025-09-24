@@ -289,7 +289,7 @@ func (l *Lobby) CheckBingo(userID uint) bool {
 
 		// 2️⃣ Calculate payout
 		totalPot := float64(l.Stake * joinedUsers)
-		winnings := totalPot * 0.2 // 80% goes to winner
+		winnings := totalPot * 0.8 // 80% goes to winner
 
 		// 3️⃣ Update winner balance in DB
 		var winner models.User
