@@ -550,7 +550,8 @@ func (l *Lobby) broadcastState() {
 	for userID := range l.clients {
 		var user models.User
 		if err := config.DB.First(&user, userID).Error; err == nil {
-			balances[userID] = user.Balance
+			telegramID := uint(user.TelegramID) // convert int64 → uint
+			balances[telegramID] = user.Balance
 		} else {
 			log.Printf("[Lobby %d] failed to fetch balance for user %d: %v", l.Stake, userID, err)
 		}
