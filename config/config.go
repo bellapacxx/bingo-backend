@@ -49,6 +49,7 @@ func SetupDatabase() *gorm.DB {
 			&models.Game{},
 			&models.Card{},
 			&models.Transaction{},
+			&models.Deposit{},
 		); err != nil {
 			log.Fatalf("[FATAL] Migration failed: %v", err)
 		}
