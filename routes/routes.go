@@ -35,7 +35,7 @@ func SetupRoutes(r *gin.Engine) {
 	// ----------------------
 	api.POST("/deposit", controllers.Deposit)   // Deposit funds
 	api.POST("/withdraw", controllers.Withdraw) // Withdraw funds
-
+    api.POST("/deposit/verify", controllers.VerifyDeposit) 
 	// ----------------------
 	// Lobby WebSocket
 	// ----------------------
