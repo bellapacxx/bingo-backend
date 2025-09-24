@@ -531,7 +531,8 @@ type broadcastState struct {
 	Selected          map[uint]int    `json:"selected"`
 	AvailableCards    []CardBroadcast `json:"availableCards"` // send full cards
 	BingoWinner       *uint
-	BingoWinnerCardID *int `json:"bingoWinnerCardId"`
+	BingoWinnerCardID *int             `json:"bingoWinnerCardId"`
+	Balances          map[uint]float64 `json:"balances"`
 }
 type CardBroadcast struct {
 	CardID int   `json:"card_id"`
@@ -545,6 +546,15 @@ type CardBroadcast struct {
 
 func (l *Lobby) broadcastState() {
 	l.mu.RLock()
+	balances := make(map[uint]float64, len(l.clients))
+	for userID := range l.clients {
+		var user models.User
+		if err := config.DB.First(&user, userID).Error; err == nil {
+			balances[userID] = user.Balance
+		} else {
+			log.Printf("[Lobby %d] failed to fetch balance for user %d: %v", l.Stake, userID, err)
+		}
+	}
 
 	state := broadcastState{
 		Stake:             l.Stake,
@@ -556,6 +566,7 @@ func (l *Lobby) broadcastState() {
 		AvailableCards:    copyCardsMapWithTaken(l.selectedIDs), // all cards
 		BingoWinner:       l.BingoWinner,
 		BingoWinnerCardID: l.BingoWinnerCardID, // automatically included
+		Balances:          balances,            // ✅ include balances
 	}
 	clients := make([]*Client, 0, len(l.clients))
 	for _, c := range l.clients {
