@@ -18,6 +18,7 @@ type VerifyDepositRequest struct {
 
 // VerifyDeposit updates user balance after deposit verification
 func VerifyDeposit(c *gin.Context) {
+	log.Printf("masgds")
 	var req VerifyDepositRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
