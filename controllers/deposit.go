@@ -1,8 +1,10 @@
 package controllers
 
 import (
+	"log"
 	"net/http"
 
+	"github.com/bellapacxx/bingo-backend/config"
 	"github.com/bellapacxx/bingo-backend/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -14,6 +16,7 @@ type VerifyDepositRequest struct {
 	Reference      string `json:"reference" binding:"required"`      // Reference code
 }
 
+// VerifyDeposit updates user balance after deposit verification
 func VerifyDeposit(c *gin.Context) {
 	var req VerifyDepositRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -21,16 +24,20 @@ func VerifyDeposit(c *gin.Context) {
 		return
 	}
 
-	db, _ := c.MustGet("db").(*gorm.DB) // assuming *gorm.DB is stored in context
 	var user models.User
-	if err := db.Where("telegram_id = ?", req.UserID).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+	if err := config.DB.Where("telegram_id = ?", req.UserID).First(&user).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+		log.Printf("[ERROR] Failed to fetch user: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
 
-	// Optional: prevent double deposits by checking reference
+	// Prevent double deposits
 	var depositExists int64
-	db.Model(&models.Deposit{}).Where("reference = ?", req.Reference).Count(&depositExists)
+	config.DB.Model(&models.Deposit{}).Where("reference = ?", req.Reference).Count(&depositExists)
 	if depositExists > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "deposit with this reference already processed"})
 		return
@@ -38,17 +45,22 @@ func VerifyDeposit(c *gin.Context) {
 
 	// Update balance
 	user.Balance += float64(req.ExpectedAmount)
-	if err := db.Save(&user).Error; err != nil {
+	if err := config.DB.Save(&user).Error; err != nil {
+		log.Printf("[ERROR] Failed to update balance: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update balance"})
 		return
 	}
 
 	// Record the deposit
-	db.Create(&models.Deposit{
+	if err := config.DB.Create(&models.Deposit{
 		UserID:    user.ID,
 		Amount:    float64(req.ExpectedAmount),
 		Reference: req.Reference,
-	})
+	}).Error; err != nil {
+		log.Printf("[ERROR] Failed to record deposit: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record deposit"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
