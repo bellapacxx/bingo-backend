@@ -240,6 +240,7 @@ func (l *Lobby) CheckBingo(userID uint) bool {
 			l.BingoWinnerCardID = &cid
 		}
 		joinedUsers := len(l.Cards)
+		 l.Status = "winner_claimed"
 		l.mu.Unlock()
 
 		// --- Payout ---
@@ -269,94 +270,84 @@ func (l *Lobby) CheckBingo(userID uint) bool {
 func hasBingo(grid [][]int, drawnSet map[int]bool) bool {
 	const freeRow, freeCol = 2, 2 // center free space
 
-	// Helper to check if a number is considered drawn (including free)
 	isDrawn := func(n int, row, col int) bool {
 		if row == freeRow && col == freeCol {
-			return true // free space always counts
+			return true
 		}
 		return drawnSet[n]
 	}
 
-	// Full card
-	full := true
-	for row := 0; row < 5; row++ {
-		for col := 0; col < 5; col++ {
+	checkLine := func(cells [][2]int) bool {
+		for _, cell := range cells {
+			row, col := cell[0], cell[1]
 			if !isDrawn(grid[row][col], row, col) {
-				full = false
-				break
+				return false
 			}
 		}
-		if !full {
-			break
-		}
-	}
-	if full {
 		return true
 	}
 
-	// Horizontal
+	// 1️⃣ Corners
+	corners := [][2]int{{0, 0}, {0, 4}, {4, 0}, {4, 4}}
+	if checkLine(corners) {
+		return true
+	}
+
+	// 2️⃣ Horizontal lines
 	for row := 0; row < 5; row++ {
-		complete := true
+		cells := [][2]int{}
 		for col := 0; col < 5; col++ {
-			if !isDrawn(grid[row][col], row, col) {
-				complete = false
-				break
-			}
+			cells = append(cells, [2]int{row, col})
 		}
-		if complete {
+		if checkLine(cells) {
 			return true
 		}
 	}
 
-	// Vertical
+	// 3️⃣ Vertical lines
 	for col := 0; col < 5; col++ {
-		complete := true
+		cells := [][2]int{}
 		for row := 0; row < 5; row++ {
-			if !isDrawn(grid[row][col], row, col) {
-				complete = false
-				break
-			}
+			cells = append(cells, [2]int{row, col})
 		}
-		if complete {
+		if checkLine(cells) {
 			return true
 		}
 	}
-
-	// Diagonal top-left -> bottom-right
-	diag1 := true
+    // 5️⃣ Diagonals
+	diag1 := [][2]int{}
+	diag2 := [][2]int{}
 	for i := 0; i < 5; i++ {
-		if !isDrawn(grid[i][i], i, i) {
-			diag1 = false
-			break
-		}
+		diag1 = append(diag1, [2]int{i, i})
+		diag2 = append(diag2, [2]int{i, 4 - i})
 	}
-	if diag1 {
+	if checkLine(diag1) || checkLine(diag2) {
+		return true
+	}
+	// 4️⃣ Cross (middle row + middle column)
+	cross := [][2]int{}
+	for i := 0; i < 5; i++ {
+		cross = append(cross, [2]int{2, i}) // middle row
+		cross = append(cross, [2]int{i, 2}) // middle column
+	}
+	if checkLine(cross) {
 		return true
 	}
 
-	// Diagonal top-right -> bottom-left
-	diag2 := true
-	for i := 0; i < 5; i++ {
-		if !isDrawn(grid[i][4-i], i, 4-i) {
-			diag2 = false
-			break
+	
+
+	// 6️⃣ Full card
+	fullCard := [][2]int{}
+	for r := 0; r < 5; r++ {
+		for c := 0; c < 5; c++ {
+			fullCard = append(fullCard, [2]int{r, c})
 		}
 	}
-	if diag2 {
+	if checkLine(fullCard) {
 		return true
 	}
 
-	// Corners
-	corners := []struct{ r, c int }{
-		{0, 0}, {0, 4}, {4, 0}, {4, 4},
-	}
-	for _, c := range corners {
-		if !isDrawn(grid[c.r][c.c], c.r, c.c) {
-			return false
-		}
-	}
-
-	return true
+	return false
 }
 
 // -----------------
@@ -415,10 +406,10 @@ func (l *Lobby) RunAutoRounds() {
 	for {
 		// Skip if round already in progress
 		l.mu.RLock()
-		inProgress := l.Status == "in_progress"
+		inProgress := l.Status == "in_progress" || l.Status == "winner_claimed"
 		l.mu.RUnlock()
 		if inProgress {
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(1 * time.Millisecond)
 			continue
 		}
 
@@ -470,7 +461,11 @@ func (l *Lobby) startRound() {
     l.roundPot = float64(l.Stake * joinedUsers) * 0.8
 	l.mu.Unlock()
 	l.broadcastState()
-
+    // Create a fresh cancel channel for this round
+    drawCancel := make(chan struct{})
+    l.mu.Lock()
+    l.drawCancel = drawCancel
+    l.mu.Unlock()
 	// 1.5️⃣ Deduct stake from all users who selected a card
 	l.mu.RLock()
 	selectedUsers := make(map[uint]int, len(l.CardIDs)) // userID -> cardID
@@ -590,6 +585,7 @@ func (l *Lobby) endRound() {
 	l.BingoWinnerCardID = nil
     l.roundPot = 0
     l.BingoWinnerName = nil
+	
 	l.mu.Unlock() // unlock before broadcast and channel send
 
 	l.broadcastState()
