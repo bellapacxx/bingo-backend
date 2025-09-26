@@ -185,7 +185,7 @@ func (l *Lobby) CheckBingo(userID uint) bool {
 
 	if l.CheckedUsers[userID] {
 		l.mu.Unlock() // unlock first
-		l.notifyUser(userID, "⚠️ You cannot check again this round.")
+		l.notifyUser(userID, "⚠️ You cannot check again this round.ይሄ ካርቴላ ታስረዋል.")
 		log.Printf("[Lobby %d] User %d already checked Bingo this round", l.Stake, userID)
 		return false
 	}
