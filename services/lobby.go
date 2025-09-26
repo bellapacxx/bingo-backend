@@ -36,6 +36,7 @@ type Lobby struct {
 	// New: store current round winner
 	BingoWinner       *uint
 	BingoWinnerCardID *int // cardID ✅
+	CheckedUsers      map[uint]bool
 }
 
 var (
@@ -176,12 +177,29 @@ func (l *Lobby) SelectCard(userID uint, cardID int) bool {
 }
 
 func (l *Lobby) CheckBingo(userID uint) bool {
+	l.mu.Lock()
+	if l.CheckedUsers == nil {
+		l.CheckedUsers = make(map[uint]bool)
+	}
+
+	// ✅ Block if user already checked this round
+	if l.CheckedUsers[userID] {
+		l.notifyUser(userID, "⚠️ You already checked Bingo this round. You cannot check again.")
+		log.Printf("[Lobby %d] User %d already checked Bingo this round", l.Stake, userID)
+		l.mu.Unlock()
+		return false
+	}
+
+	// mark as checked
+	l.CheckedUsers[userID] = true
+	l.mu.Unlock()
+
 	l.mu.RLock()
 	numbers, ok := l.Cards[userID]
 	drawnNums := append([]string(nil), l.NumbersDrawn...) // copy safely
 	l.mu.RUnlock()
 
-	log.Printf("checking bingo for user %d", userID)
+	log.Printf("[Lobby %d] checking bingo for user %d", l.Stake, userID)
 	if !ok {
 		log.Printf("[Lobby %d] User %d tried Bingo without a card", l.Stake, userID)
 		return false
@@ -214,14 +232,14 @@ func (l *Lobby) CheckBingo(userID uint) bool {
 		joinedUsers := len(l.Cards)
 		l.mu.Unlock()
 
-		// payout calc
+		// payout calculation
 		totalPot := float64(l.Stake * joinedUsers)
 		winnings := totalPot * 0.8
 
-		// ✅ async DB + notify + broadcast
+		// ✅ async DB update + notify + broadcast
 		go l.handleBingoWinner(userID, winnings)
 
-		// delay round ending
+		// delay round ending slightly
 		go func() {
 			time.Sleep(5 * time.Second)
 			l.endRound()
@@ -230,6 +248,8 @@ func (l *Lobby) CheckBingo(userID uint) bool {
 		return true
 	}
 
+	// ❌ If not Bingo, user is locked automatically by CheckedUsers map
+	log.Printf("[Lobby %d] User %d checked Bingo and failed", l.Stake, userID)
 	return false
 }
 
@@ -392,6 +412,7 @@ func (l *Lobby) startRound() {
 	l.mu.Lock()
 	l.Status = "in_progress"
 	l.NumbersDrawn = []string{}
+	l.CheckedUsers = make(map[uint]bool) // ✅ reset checked users
 	l.mu.Unlock()
 	l.broadcastState()
 
