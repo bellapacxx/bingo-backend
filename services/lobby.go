@@ -527,6 +527,7 @@ type broadcastState struct {
 	BingoWinner       *uint
 	BingoWinnerCardID *int             `json:"bingoWinnerCardId"`
 	Balances          map[uint]float64 `json:"balances"`
+	PotentialWinnings float64          `json:"potentialWinnings,omitempty"`
 }
 type CardBroadcast struct {
 	CardID int   `json:"card_id"`
@@ -550,6 +551,9 @@ func (l *Lobby) broadcastState() {
 			log.Printf("[Lobby %d] failed to fetch balance for user %d: %v", l.Stake, userID, err)
 		}
 	}
+	// ✅ Calculate potential winnings dynamically based on current selected users
+	joinedUsers := len(l.Cards)
+	potentialWinnings := float64(l.Stake*joinedUsers) * 0.8
 
 	state := broadcastState{
 		Stake:             l.Stake,
@@ -562,6 +566,7 @@ func (l *Lobby) broadcastState() {
 		BingoWinner:       l.BingoWinner,
 		BingoWinnerCardID: l.BingoWinnerCardID, // automatically included
 		Balances:          balances,            // ✅ include balances
+		PotentialWinnings: potentialWinnings,
 	}
 	clients := make([]*Client, 0, len(l.clients))
 	for _, c := range l.clients {
