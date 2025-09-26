@@ -259,11 +259,21 @@ func (l *Lobby) CheckBingo(userID uint) bool {
 // Extracted helper
 // -----------------
 func hasBingo(grid [][]int, drawnSet map[int]bool) bool {
+	const freeRow, freeCol = 2, 2 // center free space
+
+	// Helper to check if a number is considered drawn (including free)
+	isDrawn := func(n int, row, col int) bool {
+		if row == freeRow && col == freeCol {
+			return true // free space always counts
+		}
+		return drawnSet[n]
+	}
+
 	// Full card
 	full := true
-	for _, row := range grid {
-		for _, n := range row {
-			if !drawnSet[n] {
+	for row := 0; row < 5; row++ {
+		for col := 0; col < 5; col++ {
+			if !isDrawn(grid[row][col], row, col) {
 				full = false
 				break
 			}
@@ -277,10 +287,10 @@ func hasBingo(grid [][]int, drawnSet map[int]bool) bool {
 	}
 
 	// Horizontal
-	for _, row := range grid {
+	for row := 0; row < 5; row++ {
 		complete := true
-		for _, n := range row {
-			if !drawnSet[n] {
+		for col := 0; col < 5; col++ {
+			if !isDrawn(grid[row][col], row, col) {
 				complete = false
 				break
 			}
@@ -294,7 +304,7 @@ func hasBingo(grid [][]int, drawnSet map[int]bool) bool {
 	for col := 0; col < 5; col++ {
 		complete := true
 		for row := 0; row < 5; row++ {
-			if !drawnSet[grid[row][col]] {
+			if !isDrawn(grid[row][col], row, col) {
 				complete = false
 				break
 			}
@@ -304,13 +314,40 @@ func hasBingo(grid [][]int, drawnSet map[int]bool) bool {
 		}
 	}
 
+	// Diagonal top-left -> bottom-right
+	diag1 := true
+	for i := 0; i < 5; i++ {
+		if !isDrawn(grid[i][i], i, i) {
+			diag1 = false
+			break
+		}
+	}
+	if diag1 {
+		return true
+	}
+
+	// Diagonal top-right -> bottom-left
+	diag2 := true
+	for i := 0; i < 5; i++ {
+		if !isDrawn(grid[i][4-i], i, 4-i) {
+			diag2 = false
+			break
+		}
+	}
+	if diag2 {
+		return true
+	}
+
 	// Corners
-	corners := []int{grid[0][0], grid[0][4], grid[4][0], grid[4][4]}
-	for _, n := range corners {
-		if !drawnSet[n] {
+	corners := []struct{ r, c int }{
+		{0, 0}, {0, 4}, {4, 0}, {4, 4},
+	}
+	for _, c := range corners {
+		if !isDrawn(grid[c.r][c.c], c.r, c.c) {
 			return false
 		}
 	}
+
 	return true
 }
 
