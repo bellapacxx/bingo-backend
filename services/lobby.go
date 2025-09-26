@@ -178,31 +178,66 @@ func (l *Lobby) SelectCard(userID uint, cardID int) bool {
 func (l *Lobby) CheckBingo(userID uint) bool {
 	l.mu.RLock()
 	numbers, ok := l.Cards[userID]
+	drawnNums := append([]string(nil), l.NumbersDrawn...) // copy safely
 	l.mu.RUnlock()
-	log.Printf("checking")
+
+	log.Printf("checking bingo for user %d", userID)
 	if !ok {
 		log.Printf("[Lobby %d] User %d tried Bingo without a card", l.Stake, userID)
 		return false
 	}
 
-	// Convert drawn numbers to a set for O(1) lookup
-	l.mu.RLock()
-	drawnSet := make(map[int]bool)
-	for _, n := range l.NumbersDrawn {
-		num, _ := strconv.Atoi(n)
-		drawnSet[num] = true
+	// --- Build drawn set ---
+	drawnSet := make(map[int]bool, len(drawnNums))
+	for _, n := range drawnNums {
+		if num, err := strconv.Atoi(n); err == nil {
+			drawnSet[num] = true
+		}
 	}
-	l.mu.RUnlock()
 
-	// Build 5x5 grid
+	// --- Build 5x5 grid ---
 	grid := make([][]int, 5)
 	for i := 0; i < 5; i++ {
 		grid[i] = numbers[i*5 : (i+1)*5]
 	}
 
-	bingo := false
+	// --- Check patterns ---
+	if hasBingo(grid, drawnSet) {
+		log.Printf("[Lobby %d] User %d claims BINGO!", l.Stake, userID)
 
-	// --- 1. Full card ---
+		// ✅ store winner quickly
+		l.mu.Lock()
+		l.BingoWinner = &userID
+		if cid, ok := l.CardIDs[userID]; ok {
+			l.BingoWinnerCardID = &cid
+		}
+		joinedUsers := len(l.Cards)
+		l.mu.Unlock()
+
+		// payout calc
+		totalPot := float64(l.Stake * joinedUsers)
+		winnings := totalPot * 0.8
+
+		// ✅ async DB + notify + broadcast
+		go l.handleBingoWinner(userID, winnings)
+
+		// delay round ending
+		go func() {
+			time.Sleep(10 * time.Second)
+			l.endRound()
+		}()
+
+		return true
+	}
+
+	return false
+}
+
+// -----------------
+// Extracted helper
+// -----------------
+func hasBingo(grid [][]int, drawnSet map[int]bool) bool {
+	// Full card
 	full := true
 	for _, row := range grid {
 		for _, n := range row {
@@ -216,107 +251,66 @@ func (l *Lobby) CheckBingo(userID uint) bool {
 		}
 	}
 	if full {
-		bingo = true
-	}
-
-	// --- 2. Horizontal lines ---
-	if !bingo {
-		for _, row := range grid {
-			lineComplete := true
-			for _, n := range row {
-				if !drawnSet[n] {
-					lineComplete = false
-					break
-				}
-			}
-			if lineComplete {
-				bingo = true
-				break
-			}
-		}
-	}
-
-	// --- 3. Vertical lines ---
-	if !bingo {
-		for col := 0; col < 5; col++ {
-			colComplete := true
-			for row := 0; row < 5; row++ {
-				if !drawnSet[grid[row][col]] {
-					colComplete = false
-					break
-				}
-			}
-			if colComplete {
-				bingo = true
-				break
-			}
-		}
-	}
-
-	// --- 4. Corners ---
-	if !bingo {
-		corners := []int{
-			grid[0][0],
-			grid[0][4],
-			grid[4][0],
-			grid[4][4],
-		}
-		cornersComplete := true
-		for _, n := range corners {
-			if !drawnSet[n] {
-				cornersComplete = false
-				break
-			}
-		}
-		if cornersComplete {
-			bingo = true
-		}
-	}
-
-	if bingo {
-		log.Printf("[Lobby %d] User %d claims BINGO!", l.Stake, userID)
-
-		// 1️⃣ Store winner info in lobby
-		l.mu.Lock()
-		l.BingoWinner = &userID
-		if cid, ok := l.CardIDs[userID]; ok {
-			l.BingoWinnerCardID = &cid
-			log.Printf("[Lobby %d] BingoWinnerCardID set to %d for user %d", l.Stake, cid, userID)
-		}
-		// Count participants for payout
-		joinedUsers := len(l.Cards)
-		l.mu.Unlock()
-
-		// 2️⃣ Calculate payout
-		totalPot := float64(l.Stake * joinedUsers)
-		winnings := totalPot * 0.8 // 80% goes to winner
-
-		// 3️⃣ Update winner balance in DB
-		var winner models.User
-		if err := config.DB.First(&winner, userID).Error; err == nil {
-			winner.Balance += winnings
-			if err := config.DB.Save(&winner).Error; err != nil {
-				log.Printf("[Lobby %d] failed to update winner balance for user %d: %v", l.Stake, userID, err)
-			} else {
-				// Notify winner
-				l.notifyUser(userID, fmt.Sprintf("🎉 You won BINGO! Winnings: %.2f", winnings))
-			}
-		} else {
-			log.Printf("[Lobby %d] failed to fetch winner user %d: %v", l.Stake, userID, err)
-		}
-
-		l.broadcastState() // unified broadcast
-
-		// Delay round ending for 10 seconds
-		go func() {
-			time.Sleep(10 * time.Second)
-			l.endRound()
-		}()
-
 		return true
 	}
 
-	return false
+	// Horizontal
+	for _, row := range grid {
+		complete := true
+		for _, n := range row {
+			if !drawnSet[n] {
+				complete = false
+				break
+			}
+		}
+		if complete {
+			return true
+		}
+	}
+
+	// Vertical
+	for col := 0; col < 5; col++ {
+		complete := true
+		for row := 0; row < 5; row++ {
+			if !drawnSet[grid[row][col]] {
+				complete = false
+				break
+			}
+		}
+		if complete {
+			return true
+		}
+	}
+
+	// Corners
+	corners := []int{grid[0][0], grid[0][4], grid[4][0], grid[4][4]}
+	for _, n := range corners {
+		if !drawnSet[n] {
+			return false
+		}
+	}
+	return true
+}
+
+// -----------------
+// Async handler
+// -----------------
+func (l *Lobby) handleBingoWinner(userID uint, winnings float64) {
+	// Update balance
+	var winner models.User
+	if err := config.DB.First(&winner, userID).Error; err == nil {
+		winner.Balance += winnings
+		if err := config.DB.Save(&winner).Error; err != nil {
+			log.Printf("[Lobby %d] failed to update balance for user %d: %v", l.Stake, userID, err)
+		} else {
+			l.notifyUser(userID, fmt.Sprintf("🎉 You won BINGO! Winnings: %.2f", winnings))
+		}
+	} else {
+		log.Printf("[Lobby %d] failed to fetch winner user %d: %v", l.Stake, userID, err)
+	}
+
+	// Broadcast state (async, doesn’t block CheckBingo)
+	l.broadcastState()
 }
 
 func (l *Lobby) notifyUser(userID uint, message string) {
