@@ -374,6 +374,7 @@ func (l *Lobby) handleBingoWinner(userID uint, winnings float64) {
 			// ✅ Save winner name for broadcast
 			l.mu.Lock()
 			l.BingoWinnerName = &winner.Name
+			log.Printf("%s", *l.BingoWinnerName)
 			l.mu.Unlock()
 		}
 	} else {
@@ -535,7 +536,7 @@ func (l *Lobby) startRound() {
             log.Printf("[Lobby %d] startRound panic: %v", l.Stake, r)
         }
         // endRound will be called by CheckBingo, so no need here
-		l.endRound() // ensure the lobby is reset even if panic occurs
+		
     }()
 
     numbers := generateBingoNumbers()
