@@ -372,7 +372,7 @@ func (l *Lobby) handleBingoWinner(userID uint, winnings float64) {
 			l.notifyUser(userID, fmt.Sprintf("🎉 You won BINGO! Winnings: %.2f", winnings))
 			// ✅ Save winner name for broadcast
 			l.mu.Lock()
-			l.BingoWinnerName = &winner.Username
+			l.BingoWinnerName = &winner.Name
 			l.mu.Unlock()
 		}
 	} else {
