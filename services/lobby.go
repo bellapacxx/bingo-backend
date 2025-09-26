@@ -490,7 +490,7 @@ func (l *Lobby) startRound() {
 		numbers := generateBingoNumbers()
 
 		for _, n := range numbers {
-			time.Sleep(5 * time.Second) // 🔹 delay 1s per number
+			time.Sleep(7 * time.Second) // 🔹 delay 1s per number
 
 			l.mu.Lock()
 			l.NumbersDrawn = append(l.NumbersDrawn, strconv.Itoa(n))
