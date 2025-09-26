@@ -223,7 +223,7 @@ func (l *Lobby) CheckBingo(userID uint) bool {
 
 		// delay round ending
 		go func() {
-			time.Sleep(10 * time.Second)
+			time.Sleep(5 * time.Second)
 			l.endRound()
 		}()
 
