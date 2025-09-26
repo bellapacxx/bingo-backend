@@ -35,6 +35,7 @@ type Lobby struct {
 	currentGame *models.Game
 	// New: store current round winner
 	BingoWinner       *uint
+	 BingoWinnerName   *string
 	BingoWinnerCardID *int // cardID ✅
 	CheckedUsers      map[uint]bool
 }
@@ -325,6 +326,10 @@ func (l *Lobby) handleBingoWinner(userID uint, winnings float64) {
 			log.Printf("[Lobby %d] failed to update balance for user %d: %v", l.Stake, userID, err)
 		} else {
 			l.notifyUser(userID, fmt.Sprintf("🎉 You won BINGO! Winnings: %.2f", winnings))
+			// ✅ Save winner name for broadcast
+			l.mu.Lock()
+			l.BingoWinnerName = &winner.Name
+			l.mu.Unlock()
 		}
 	} else {
 		log.Printf("[Lobby %d] failed to fetch winner user %d: %v", l.Stake, userID, err)
@@ -547,6 +552,7 @@ type broadcastState struct {
 	Selected          map[uint]int    `json:"selected"`
 	AvailableCards    []CardBroadcast `json:"availableCards"` // send full cards
 	BingoWinner       *uint
+	BingoWinnerName   *string         `json:"bingoWinnerName"` 
 	BingoWinnerCardID *int             `json:"bingoWinnerCardId"`
 	Balances          map[uint]float64 `json:"balances"`
 	PotentialWinnings float64          `json:"potentialWinnings,omitempty"`
@@ -587,6 +593,7 @@ func (l *Lobby) broadcastState() {
 		AvailableCards:    copyCardsMapWithTaken(l.selectedIDs), // all cards
 		BingoWinner:       l.BingoWinner,
 		BingoWinnerCardID: l.BingoWinnerCardID, // automatically included
+		BingoWinnerName:   l.BingoWinnerName,  // ✅ now works
 		Balances:          balances,            // ✅ include balances
 		PotentialWinnings: potentialWinnings,
 	}
