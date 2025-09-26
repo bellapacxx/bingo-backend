@@ -39,6 +39,7 @@ type Lobby struct {
 	 BingoWinnerName   *string
 	BingoWinnerCardID *int // cardID ✅
 	CheckedUsers      map[uint]bool
+	roundPot float64 // store total pot for the current round
 }
 
 var (
@@ -250,7 +251,7 @@ func (l *Lobby) CheckBingo(userID uint) bool {
 
 		// End round after slight delay
 		go func() {
-			time.Sleep(5 * time.Second)
+			time.Sleep(7 * time.Second)
 			l.endRound()
 		}()
 
@@ -465,6 +466,8 @@ func (l *Lobby) startRound() {
 	l.Status = "in_progress"
 	l.NumbersDrawn = []string{}
 	l.CheckedUsers = make(map[uint]bool) // ✅ reset checked users
+	joinedUsers := len(l.Cards) // number of users at start
+    l.roundPot = float64(l.Stake * joinedUsers) * 0.8
 	l.mu.Unlock()
 	l.broadcastState()
 
@@ -546,7 +549,7 @@ func (l *Lobby) startRound() {
         case <-l.drawCancel:
             log.Printf("[Lobby %d] Number draw canceled", l.Stake)
             return // stop drawing numbers
-        case <-time.After(7 * time.Second):
+        case <-time.After(6 * time.Second):
             l.mu.Lock()
             l.NumbersDrawn = append(l.NumbersDrawn, strconv.Itoa(n))
 
@@ -585,7 +588,8 @@ func (l *Lobby) endRound() {
 	l.currentGame = nil
 	l.BingoWinner = nil
 	l.BingoWinnerCardID = nil
-
+    l.roundPot = 0
+    l.BingoWinnerName = nil
 	l.mu.Unlock() // unlock before broadcast and channel send
 
 	l.broadcastState()
@@ -632,10 +636,9 @@ func (l *Lobby) broadcastState() {
 		}
 	}
 	// ✅ Calculate potential winnings dynamically based on current selected users
-	joinedUsers := len(l.Cards)
-	totalPot := float64(l.Stake * joinedUsers)
-	potentialWinnings := totalPot * 0.8
 	
+	potentialWinnings := l.roundPot
+
 	state := broadcastState{
 		Stake:             l.Stake,
 		Status:            l.Status,
