@@ -240,7 +240,6 @@ func (l *Lobby) CheckBingo(userID uint) bool {
 			l.BingoWinnerCardID = &cid
 		}
 		joinedUsers := len(l.Cards)
-		 l.Status = "winner_claimed"
 		l.mu.Unlock()
 
 		// --- Payout ---
@@ -314,16 +313,7 @@ func hasBingo(grid [][]int, drawnSet map[int]bool) bool {
 			return true
 		}
 	}
-    // 5️⃣ Diagonals
-	diag1 := [][2]int{}
-	diag2 := [][2]int{}
-	for i := 0; i < 5; i++ {
-		diag1 = append(diag1, [2]int{i, i})
-		diag2 = append(diag2, [2]int{i, 4 - i})
-	}
-	if checkLine(diag1) || checkLine(diag2) {
-		return true
-	}
+
 	// 4️⃣ Cross (middle row + middle column)
 	cross := [][2]int{}
 	for i := 0; i < 5; i++ {
@@ -334,7 +324,16 @@ func hasBingo(grid [][]int, drawnSet map[int]bool) bool {
 		return true
 	}
 
-	
+	// 5️⃣ Diagonals
+	diag1 := [][2]int{}
+	diag2 := [][2]int{}
+	for i := 0; i < 5; i++ {
+		diag1 = append(diag1, [2]int{i, i})
+		diag2 = append(diag2, [2]int{i, 4 - i})
+	}
+	if checkLine(diag1) || checkLine(diag2) {
+		return true
+	}
 
 	// 6️⃣ Full card
 	fullCard := [][2]int{}
@@ -406,10 +405,10 @@ func (l *Lobby) RunAutoRounds() {
 	for {
 		// Skip if round already in progress
 		l.mu.RLock()
-		inProgress := l.Status == "in_progress" || l.Status == "winner_claimed"
+		inProgress := l.Status == "in_progress"
 		l.mu.RUnlock()
 		if inProgress {
-			time.Sleep(1 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
@@ -461,11 +460,7 @@ func (l *Lobby) startRound() {
     l.roundPot = float64(l.Stake * joinedUsers) * 0.8
 	l.mu.Unlock()
 	l.broadcastState()
-    // Create a fresh cancel channel for this round
-    drawCancel := make(chan struct{})
-    l.mu.Lock()
-    l.drawCancel = drawCancel
-    l.mu.Unlock()
+
 	// 1.5️⃣ Deduct stake from all users who selected a card
 	l.mu.RLock()
 	selectedUsers := make(map[uint]int, len(l.CardIDs)) // userID -> cardID
@@ -585,7 +580,6 @@ func (l *Lobby) endRound() {
 	l.BingoWinnerCardID = nil
     l.roundPot = 0
     l.BingoWinnerName = nil
-	
 	l.mu.Unlock() // unlock before broadcast and channel send
 
 	l.broadcastState()
