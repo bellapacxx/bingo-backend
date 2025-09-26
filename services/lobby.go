@@ -177,35 +177,36 @@ func (l *Lobby) SelectCard(userID uint, cardID int) bool {
 }
 
 func (l *Lobby) CheckBingo(userID uint) bool {
+	// --- Step 1: Initialize CheckedUsers map and check if user already checked ---
 	l.mu.Lock()
 	if l.CheckedUsers == nil {
 		l.CheckedUsers = make(map[uint]bool)
 	}
 
-	// ✅ Block if user already checked this round
 	if l.CheckedUsers[userID] {
-		l.notifyUser(userID, "⚠️ You already checked Bingo this round. You cannot check again.")
+		l.mu.Unlock() // unlock first
+		l.notifyUser(userID, "⚠️ You cannot check again this round.")
 		log.Printf("[Lobby %d] User %d already checked Bingo this round", l.Stake, userID)
-		l.mu.Unlock()
 		return false
 	}
 
-	// mark as checked
+	// Mark as checked
 	l.CheckedUsers[userID] = true
-	l.mu.Unlock()
 
-	l.mu.RLock()
+	// Copy numbers and drawn numbers safely
 	numbers, ok := l.Cards[userID]
-	drawnNums := append([]string(nil), l.NumbersDrawn...) // copy safely
-	l.mu.RUnlock()
+	drawnNums := append([]string(nil), l.NumbersDrawn...)
+	l.mu.Unlock() // unlock ASAP
 
-	log.Printf("[Lobby %d] checking bingo for user %d", l.Stake, userID)
+	// --- Step 2: Validate user has a card ---
 	if !ok {
 		log.Printf("[Lobby %d] User %d tried Bingo without a card", l.Stake, userID)
 		return false
 	}
 
-	// --- Build drawn set ---
+	log.Printf("[Lobby %d] checking bingo for user %d", l.Stake, userID)
+
+	// --- Step 3: Build drawn set ---
 	drawnSet := make(map[int]bool, len(drawnNums))
 	for _, n := range drawnNums {
 		if num, err := strconv.Atoi(n); err == nil {
@@ -213,17 +214,17 @@ func (l *Lobby) CheckBingo(userID uint) bool {
 		}
 	}
 
-	// --- Build 5x5 grid ---
+	// --- Step 4: Build 5x5 grid ---
 	grid := make([][]int, 5)
 	for i := 0; i < 5; i++ {
 		grid[i] = numbers[i*5 : (i+1)*5]
 	}
 
-	// --- Check patterns ---
+	// --- Step 5: Check bingo patterns ---
 	if hasBingo(grid, drawnSet) {
 		log.Printf("[Lobby %d] User %d claims BINGO!", l.Stake, userID)
 
-		// ✅ store winner quickly
+		// --- Store winner safely ---
 		l.mu.Lock()
 		l.BingoWinner = &userID
 		if cid, ok := l.CardIDs[userID]; ok {
@@ -232,14 +233,14 @@ func (l *Lobby) CheckBingo(userID uint) bool {
 		joinedUsers := len(l.Cards)
 		l.mu.Unlock()
 
-		// payout calculation
+		// --- Payout ---
 		totalPot := float64(l.Stake * joinedUsers)
 		winnings := totalPot * 0.8
 
-		// ✅ async DB update + notify + broadcast
+		// Async DB update, notification, broadcast
 		go l.handleBingoWinner(userID, winnings)
 
-		// delay round ending slightly
+		// End round after slight delay
 		go func() {
 			time.Sleep(5 * time.Second)
 			l.endRound()
@@ -248,7 +249,7 @@ func (l *Lobby) CheckBingo(userID uint) bool {
 		return true
 	}
 
-	// ❌ If not Bingo, user is locked automatically by CheckedUsers map
+	// ❌ Bingo failed, user is already marked as checked
 	log.Printf("[Lobby %d] User %d checked Bingo and failed", l.Stake, userID)
 	return false
 }
