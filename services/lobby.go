@@ -30,6 +30,7 @@ type Lobby struct {
 	Countdown    int
 	NumbersDrawn []string
 	roundDone    chan struct{}
+    drawCancel chan struct{} // <- new field
 
 	mu          sync.RWMutex
 	currentGame *models.Game
@@ -58,6 +59,7 @@ func InitLobbyService() {
 			Status:      "waiting",
 			Countdown:   DefaultCountdownSec,
 			roundDone:   make(chan struct{}, 1),
+			drawCancel:  make(chan struct{}), // ← initialize here
 		}
 		Lobbies[stake] = l
 		go l.RunAutoRounds()
@@ -224,7 +226,12 @@ func (l *Lobby) CheckBingo(userID uint) bool {
 	// --- Step 5: Check bingo patterns ---
 	if hasBingo(grid, drawnSet) {
 		log.Printf("[Lobby %d] User %d claims BINGO!", l.Stake, userID)
-
+        // Stop number drawing immediately
+    l.mu.Lock()
+    if l.drawCancel != nil {
+        close(l.drawCancel)           // signal cancel
+        l.drawCancel = make(chan struct{}) // recreate for next round
+    }
 		// --- Store winner safely ---
 		l.mu.Lock()
 		l.BingoWinner = &userID
@@ -522,33 +529,39 @@ func (l *Lobby) startRound() {
 
 	// 3️⃣ Draw numbers in a goroutine
 	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[Lobby %d] startRound panic: %v", l.Stake, r)
-			}
-			l.endRound()
-		}()
+    defer func() {
+        if r := recover(); r != nil {
+            log.Printf("[Lobby %d] startRound panic: %v", l.Stake, r)
+        }
+        // endRound will be called by CheckBingo, so no need here
+		l.endRound() // ensure the lobby is reset even if panic occurs
+    }()
 
-		numbers := generateBingoNumbers()
+    numbers := generateBingoNumbers()
 
-		for _, n := range numbers {
-			time.Sleep(7 * time.Second) // 🔹 delay 1s per number
+    for _, n := range numbers {
+        select {
+        case <-l.drawCancel:
+            log.Printf("[Lobby %d] Number draw canceled", l.Stake)
+            return // stop drawing numbers
+        case <-time.After(7 * time.Second):
+            l.mu.Lock()
+            l.NumbersDrawn = append(l.NumbersDrawn, strconv.Itoa(n))
 
-			l.mu.Lock()
-			l.NumbersDrawn = append(l.NumbersDrawn, strconv.Itoa(n))
+            if l.currentGame != nil {
+                if jsonBytes, err := json.Marshal(l.NumbersDrawn); err == nil {
+                    l.currentGame.NumbersJSON = datatypes.JSON(jsonBytes)
+                    _ = config.DB.Save(l.currentGame).Error
+                }
+            }
+            l.mu.Unlock()
 
-			if l.currentGame != nil {
-				if jsonBytes, err := json.Marshal(l.NumbersDrawn); err == nil {
-					l.currentGame.NumbersJSON = datatypes.JSON(jsonBytes)
-					_ = config.DB.Save(l.currentGame).Error
-				}
-			}
-			l.mu.Unlock()
+            // Broadcast after unlocking to avoid deadlock
+            l.broadcastState()
+        }
+    }
+}()
 
-			// Broadcast after unlocking to avoid deadlock
-			l.broadcastState()
-		}
-	}()
 
 }
 
