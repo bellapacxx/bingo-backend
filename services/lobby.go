@@ -229,12 +229,12 @@ func (l *Lobby) CheckBingo(userID uint) bool {
 		log.Printf("[Lobby %d] User %d claims BINGO!", l.Stake, userID)
         // Stop number drawing immediately
     l.mu.Lock()
-   oldCancel := l.drawCancel
-l.drawCancel = make(chan struct{}) // create new for next round
-l.mu.Unlock()
-close(oldCancel)
+    if l.drawCancel != nil {
+        close(l.drawCancel)           // signal cancel
+        l.drawCancel = make(chan struct{}) // recreate for next round
+    }
 		// --- Store winner safely ---
-
+		
 		l.BingoWinner = &userID
 		if cid, ok := l.CardIDs[userID]; ok {
 			l.BingoWinnerCardID = &cid
@@ -432,7 +432,7 @@ func (l *Lobby) RunAutoRounds() {
 		cardCount := len(l.CardIDs)
 		l.mu.RUnlock()
 
-		if cardCount < 2 {
+		if cardCount < 1 {
 
 			l.mu.Lock()
 			l.Status = "waiting"
