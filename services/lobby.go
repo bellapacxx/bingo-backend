@@ -633,8 +633,9 @@ func (l *Lobby) broadcastState() {
 	}
 	// ✅ Calculate potential winnings dynamically based on current selected users
 	joinedUsers := len(l.Cards)
-	potentialWinnings := float64(l.Stake*joinedUsers) * 0.2
-
+	totalPot := float64(l.Stake * joinedUsers)
+	potentialWinnings := totalPot * 0.8
+	
 	state := broadcastState{
 		Stake:             l.Stake,
 		Status:            l.Status,
