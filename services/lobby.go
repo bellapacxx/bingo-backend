@@ -362,6 +362,7 @@ func hasBingo(grid [][]int, drawnSet map[int]bool) bool {
 // Async handler
 // -----------------
 func (l *Lobby) handleBingoWinner(userID uint, winnings float64) {
+	log.Printf("db save")
 	// Update balance
 	var winner models.User
 	if err := config.DB.First(&winner, userID).Error; err == nil {
@@ -631,7 +632,7 @@ func (l *Lobby) broadcastState() {
 	}
 	// ✅ Calculate potential winnings dynamically based on current selected users
 	joinedUsers := len(l.Cards)
-	potentialWinnings := float64(l.Stake*joinedUsers) * 0.8
+	potentialWinnings := float64(l.Stake*joinedUsers) * 0.2
 
 	state := broadcastState{
 		Stake:             l.Stake,
