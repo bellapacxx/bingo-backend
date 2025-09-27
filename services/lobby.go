@@ -231,7 +231,7 @@ func (l *Lobby) CheckBingo(userID uint) bool {
     l.mu.Lock()
     if l.drawCancel != nil {
         close(l.drawCancel)           // signal cancel
-        l.drawCancel = make(chan struct{}) // recreate for next round
+       l.drawCancel = nil // recreate for next round
     }
 		// --- Store winner safely ---
 		
@@ -454,6 +454,7 @@ func (l *Lobby) startRound() {
 	// 1️⃣ Set round status
 	l.mu.Lock()
 	l.Status = "in_progress"
+	 l.drawCancel = make(chan struct{})
 	l.NumbersDrawn = []string{}
 	l.CheckedUsers = make(map[uint]bool) // ✅ reset checked users
 	joinedUsers := len(l.Cards) // number of users at start
@@ -568,6 +569,10 @@ func (l *Lobby) endRound() {
 		l.currentGame.EndTime = time.Now()
 		_ = config.DB.Save(l.currentGame).Error
 	}
+	if l.drawCancel != nil {
+        close(l.drawCancel)
+        l.drawCancel = nil
+    }
 	log.Printf("ending")
 	// Reset state
 	l.Cards = make(map[uint][]int)
