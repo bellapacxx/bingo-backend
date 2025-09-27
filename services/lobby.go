@@ -555,7 +555,7 @@ func (l *Lobby) startRound() {
             l.broadcastState()
         }
     }
-	
+	l.endRound()
 }()
 
 
